@@ -8,8 +8,10 @@ both macOS and Windows.
 
 import os
 import sys
+import math
 import struct
 import zlib
+import colorsys
 import subprocess
 
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".environment_theme_controller")
@@ -65,17 +67,39 @@ def write_gradient_png(path, width, height, top_rgb, bottom_rgb):
 # Build the weather wallpaper image
 # ---------------------------------------------------------
 
+def _drift(rgb, phase, strength):
+    """
+    Nudge a colour along a smooth cycle: a small hue rotation plus a gentle
+    brightness breathe. *phase* (0..1) walks the cycle; *strength* (0..1)
+    scales the amplitude. Kept small so the shift is noticeable, not jarring.
+    """
+    if strength <= 0:
+        return rgb
+    h, s, v = colorsys.rgb_to_hsv(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
+    h = (h + 0.05 * strength * math.sin(2 * math.pi * phase)) % 1.0
+    v = max(0.0, min(1.0, v + 0.07 * strength * math.cos(2 * math.pi * phase)))
+    r, g, b = colorsys.hsv_to_rgb(h, s, v)
+    return (_clamp(r * 255), _clamp(g * 255), _clamp(b * 255))
+
+
+def shifted_base(r, g, b, tint_strength=0.4, phase=0.0, shift_strength=0.0):
+    """The final tinted+drifted base colour (engine uses this for change-detection)."""
+    grey = (90, 90, 95)
+    base = _mix(grey, (r, g, b), max(0.0, min(1.0, tint_strength)))
+    return _drift(base, phase, max(0.0, min(1.0, shift_strength)))
+
+
 def build_weather_image(r, g, b, brightness, tint_strength=0.4,
-                        width=1280, height=800):
+                        phase=0.0, shift_strength=0.0, width=480, height=300):
     """
     Render the weather colour as a sky-like vertical gradient and return
-    the file path. *tint_strength* (0..1) blends the whole image toward a
-    neutral grey — lower = subtler, higher = more saturated colour.
+    the file path. *tint_strength* (0..1) blends toward neutral grey;
+    *phase*/*shift_strength* apply the subtle dynamic colour drift.
+
+    The image is deliberately small — a gradient upscales cleanly and a tiny
+    PNG keeps generation near-instant and memory use negligible.
     """
-    base = (r, g, b)
-    grey = (90, 90, 95)
-    tint_strength = max(0.0, min(1.0, tint_strength))
-    base = _mix(grey, base, tint_strength)
+    base = shifted_base(r, g, b, tint_strength, phase, shift_strength)
 
     # Sky gradient: lighter near the top, darker toward the bottom.
     top = _mix(base, (255, 255, 255), 0.18 * brightness)
@@ -150,7 +174,9 @@ def _set_wallpaper_windows(path: str) -> bool:
         return False
 
 
-def apply_weather_wallpaper(r, g, b, brightness, tint_strength=0.4) -> bool:
-    """Build the weather image and apply it. Returns True on success."""
-    path = build_weather_image(r, g, b, brightness, tint_strength)
+def apply_weather_wallpaper(r, g, b, brightness, tint_strength=0.4,
+                            phase=0.0, shift_strength=0.0) -> bool:
+    """Build the (optionally drifted) weather image and apply it."""
+    path = build_weather_image(r, g, b, brightness, tint_strength,
+                               phase=phase, shift_strength=shift_strength)
     return set_wallpaper(path)

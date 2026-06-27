@@ -27,6 +27,11 @@ DEFAULTS = {
     # Theme.
     "weather_tint_strength": 40,  # percent 0-100 (reserved for blending)
 
+    # Wallpaper — subtle, continuous colour drift so the desktop feels alive.
+    "wallpaper_dynamic": True,            # enable the slow colour shift
+    "wallpaper_shift_strength": 35,       # percent 0-100 — drift amplitude
+    "wallpaper_min_interval_seconds": 45, # never redraw more often than this
+
     # Sound.
     "sound_volume": 25,           # percent 0-100 — "subtle" by default
 
@@ -41,8 +46,18 @@ DEFAULTS = {
     # Start automatically when the user logs in.
     "run_at_login": False,
 
-    # How often the background engine re-evaluates everything.
-    "poll_interval_seconds": 300,
+    # Engine cadence. The loop steps cheaply every tick_interval; live weather
+    # is only refetched every weather_refresh (expensive work runs on change).
+    "tick_interval_seconds": 30,
+    "weather_refresh_seconds": 600,
+
+    # Productivity (Pomodoro) timer durations, in minutes.
+    "pomodoro": {
+        "work_min": 25,
+        "break_min": 5,
+        "long_break_min": 15,
+        "cycles_before_long": 4,
+    },
 }
 
 # Allowed values for the override dropdowns — shared with the GUI.

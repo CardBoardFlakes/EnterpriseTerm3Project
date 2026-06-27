@@ -264,6 +264,18 @@ def compute_theme_color(condition, sunrise, sunset, is_night_override=None):
     return scale(base, bright), bright
 
 
+def theme_signature(r, g, b, brightness):
+    """
+    A hashable summary of what the user would actually *see* for this colour,
+    so the engine can skip re-applying when nothing visible changed. On macOS
+    the accent snaps to a named colour, so only the name + appearance matter.
+    """
+    appearance = "dark" if brightness < DARK_MODE_THRESHOLD else "light"
+    if sys.platform == "darwin":
+        return (appearance, _nearest_macos_accent(r, g, b)[1])
+    return (appearance, r, g, b)
+
+
 def apply_theme_color(r, g, b, brightness):
     """
     Apply an already-computed RGB colour using whatever mechanism the

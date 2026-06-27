@@ -21,6 +21,8 @@ import config
 import tasks as tasks_mod
 import autostart
 import engine
+import sound
+import pomodoro
 
 
 # ---------------------------------------------------------
@@ -41,7 +43,16 @@ def apply_values_to_config(cfg: dict, values: dict) -> dict:
     }
     cfg["weather_tint_strength"] = int(round(values["tint"]))
     cfg["sound_volume"] = int(round(values["volume"]))
-    cfg["poll_interval_seconds"] = max(5, int(values["poll_interval"]))
+    cfg["tick_interval_seconds"] = max(5, int(values["tick_interval"]))
+    cfg["weather_refresh_seconds"] = max(30, int(values["weather_refresh"]))
+    cfg["wallpaper_dynamic"] = bool(values["wallpaper_dynamic"])
+    cfg["wallpaper_shift_strength"] = int(round(values["wallpaper_shift"]))
+    cfg["pomodoro"] = {
+        "work_min": max(1, int(values["p_work"])),
+        "break_min": max(1, int(values["p_break"])),
+        "long_break_min": max(1, int(values["p_long"])),
+        "cycles_before_long": max(1, int(values["p_cycles"])),
+    }
     cfg["manual_weather"] = values["manual_weather"]
     cfg["manual_time"] = values["manual_time"]
 
@@ -77,6 +88,7 @@ class App:
         self._build_vars()
         self._build_ui()
         self._poll_status_queue()
+        self._timer_loop()
 
     # --- tk variables --------------------------------------------------
     def _build_vars(self):
@@ -89,13 +101,27 @@ class App:
         self.v_tasks = tk.BooleanVar(value=f.get("tasks", True))
         self.v_tint = tk.DoubleVar(value=float(c.get("weather_tint_strength", 40)))
         self.v_volume = tk.DoubleVar(value=float(c.get("sound_volume", 25)))
-        self.v_poll = tk.IntVar(value=int(c.get("poll_interval_seconds", 300)))
+        self.v_tick = tk.IntVar(value=int(c.get("tick_interval_seconds", 30)))
+        self.v_weatherrefresh = tk.IntVar(value=int(c.get("weather_refresh_seconds", 600)))
+        self.v_wpdynamic = tk.BooleanVar(value=c.get("wallpaper_dynamic", True))
+        self.v_wpshift = tk.DoubleVar(value=float(c.get("wallpaper_shift_strength", 35)))
         self.v_weather = tk.StringVar(value=c.get("manual_weather", "auto"))
         self.v_time = tk.StringVar(value=c.get("manual_time", "auto"))
         mc = c.get("manual_theme_color")
         self.v_color = tk.StringVar(value=("auto" if not mc else ",".join(map(str, mc))))
         self.v_runlogin = tk.BooleanVar(value=autostart.is_autostart_enabled())
         self.v_status = tk.StringVar(value="Idle. Press Start or Apply Now.")
+
+        # Pomodoro durations + live timer state.
+        p = c.get("pomodoro", {})
+        self.v_pwork = tk.IntVar(value=int(p.get("work_min", 25)))
+        self.v_pbreak = tk.IntVar(value=int(p.get("break_min", 5)))
+        self.v_plong = tk.IntVar(value=int(p.get("long_break_min", 15)))
+        self.v_pcycles = tk.IntVar(value=int(p.get("cycles_before_long", 4)))
+        self.v_timer = tk.StringVar(value="Idle")
+        self.pomo = pomodoro.Pomodoro(
+            self.v_pwork.get(), self.v_pbreak.get(),
+            self.v_plong.get(), self.v_pcycles.get())
 
     # --- UI ------------------------------------------------------------
     def _build_ui(self):
@@ -111,6 +137,7 @@ class App:
         nb.add(self._tab_general(nb), text="General")
         nb.add(self._tab_override(nb), text="Manual Override")
         nb.add(self._tab_tasks(nb), text="Tasks")
+        nb.add(self._tab_timer(nb), text="Timer")
 
         status = ttk.Label(self.root, textvariable=self.v_status,
                            relief="sunken", anchor="w", padding=4)
@@ -135,11 +162,18 @@ class App:
         self._slider(fr, "Weather tint strength", self.v_tint)
         self._slider(fr, "Sound volume", self.v_volume)
 
-        pollfr = ttk.Frame(fr)
-        pollfr.pack(fill="x", pady=6)
-        ttk.Label(pollfr, text="Refresh interval (seconds):").pack(side="left")
-        ttk.Spinbox(pollfr, from_=5, to=3600, textvariable=self.v_poll,
-                    width=8).pack(side="left", padx=6)
+        ttk.Checkbutton(fr, text="Dynamic wallpaper (subtle colour shift)",
+                        variable=self.v_wpdynamic).pack(anchor="w", pady=(6, 0))
+        self._slider(fr, "Wallpaper shift strength", self.v_wpshift)
+
+        ivfr = ttk.Frame(fr)
+        ivfr.pack(fill="x", pady=6)
+        ttk.Label(ivfr, text="Tick (s):").pack(side="left")
+        ttk.Spinbox(ivfr, from_=5, to=3600, textvariable=self.v_tick,
+                    width=6).pack(side="left", padx=(2, 12))
+        ttk.Label(ivfr, text="Weather refresh (s):").pack(side="left")
+        ttk.Spinbox(ivfr, from_=30, to=7200, textvariable=self.v_weatherrefresh,
+                    width=7).pack(side="left", padx=2)
 
         ttk.Checkbutton(fr, text="Run automatically at login",
                         variable=self.v_runlogin,
@@ -221,6 +255,79 @@ class App:
                    command=self.on_remove_task).pack(side="left", padx=6)
         return fr
 
+    def _tab_timer(self, parent):
+        fr = ttk.Frame(parent, padding=12)
+
+        ttk.Label(fr, textvariable=self.v_timer,
+                  font=("Helvetica", 28)).pack(pady=(10, 4))
+        self.lbl_cycles = ttk.Label(fr, text="Completed: 0", foreground="#666")
+        self.lbl_cycles.pack()
+
+        ctl = ttk.Frame(fr); ctl.pack(pady=12)
+        self.btn_timer = ttk.Button(ctl, text="Start", width=10,
+                                    command=self.on_timer_toggle)
+        self.btn_timer.pack(side="left", padx=4)
+        ttk.Button(ctl, text="Skip", width=8,
+                   command=self.on_timer_skip).pack(side="left", padx=4)
+        ttk.Button(ctl, text="Reset", width=8,
+                   command=self.on_timer_reset).pack(side="left", padx=4)
+
+        durs = ttk.LabelFrame(fr, text="Durations (minutes)", padding=8)
+        durs.pack(fill="x", pady=10)
+        for label, var, hi in [("Work", self.v_pwork, 120),
+                               ("Break", self.v_pbreak, 60),
+                               ("Long break", self.v_plong, 120),
+                               ("Cycles → long", self.v_pcycles, 12)]:
+            row = ttk.Frame(durs); row.pack(fill="x", pady=2)
+            ttk.Label(row, text=label, width=14).pack(side="left")
+            ttk.Spinbox(row, from_=1, to=hi, textvariable=var, width=6).pack(side="left")
+        ttk.Button(durs, text="Apply durations",
+                   command=self.on_timer_apply_durations).pack(anchor="e", pady=(6, 0))
+        return fr
+
+    # --- timer ---------------------------------------------------------
+    def _update_timer_label(self):
+        self.v_timer.set(self.pomo.label())
+        if hasattr(self, "lbl_cycles"):
+            self.lbl_cycles.config(text=f"Completed work sessions: {self.pomo.completed_work}")
+        if hasattr(self, "btn_timer"):
+            self.btn_timer.config(text="Pause" if self.pomo.running else "Start")
+
+    def _timer_loop(self):
+        ev = self.pomo.tick(1) if self.pomo.running else None
+        if ev:
+            event, nxt = ev
+            msg = ("Work done — time for a break."
+                   if event == "work_complete" else "Break over — back to work.")
+            try:
+                sound.play_chime()
+            except Exception:
+                pass
+            engine.notify("Pomodoro", msg)
+            self.v_status.set(f"Timer: {msg}")
+        self._update_timer_label()
+        self.root.after(1000, self._timer_loop)
+
+    def on_timer_toggle(self):
+        self.pomo.toggle()
+        self._update_timer_label()
+
+    def on_timer_skip(self):
+        self.pomo.skip()
+        self._update_timer_label()
+
+    def on_timer_reset(self):
+        self.pomo.reset()
+        self._update_timer_label()
+
+    def on_timer_apply_durations(self):
+        self.pomo.configure(self.v_pwork.get(), self.v_pbreak.get(),
+                            self.v_plong.get(), self.v_pcycles.get())
+        self._collect()
+        config.save_config(self.cfg)
+        self.v_status.set("Timer durations updated.")
+        self._update_timer_label()
+
     # --- task helpers --------------------------------------------------
     def _refresh_tasks(self):
         for item in self.tree.get_children():
@@ -277,7 +384,14 @@ class App:
             "tasks": self.v_tasks.get(),
             "tint": self.v_tint.get(),
             "volume": self.v_volume.get(),
-            "poll_interval": self.v_poll.get(),
+            "tick_interval": self.v_tick.get(),
+            "weather_refresh": self.v_weatherrefresh.get(),
+            "wallpaper_dynamic": self.v_wpdynamic.get(),
+            "wallpaper_shift": self.v_wpshift.get(),
+            "p_work": self.v_pwork.get(),
+            "p_break": self.v_pbreak.get(),
+            "p_long": self.v_plong.get(),
+            "p_cycles": self.v_pcycles.get(),
             "manual_weather": self.v_weather.get(),
             "manual_time": self.v_time.get(),
             "manual_theme_color": self.v_color.get(),

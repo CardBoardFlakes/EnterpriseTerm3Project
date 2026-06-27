@@ -57,7 +57,9 @@ def test_config():
         check("roundtrip enabled", cfg2["enabled"] is False)
         check("roundtrip nested feature", cfg2["features"]["wallpaper"] is False)
         check("missing key filled from defaults",
-              cfg2["poll_interval_seconds"] == 300)
+              cfg2["weather_refresh_seconds"] == 600 and cfg2["tick_interval_seconds"] == 30)
+        check("pomodoro defaults present",
+              cfg2["pomodoro"]["work_min"] == 25)
         check("feature gated by master switch",
               config.feature_enabled(cfg2, "dynamic_theme") is False)
         cfg2["enabled"] = True
@@ -296,24 +298,98 @@ def test_gui_helper():
     except Exception as e:
         check(f"gui import (skipped: {e})", True)
         return
+    base_vals = {
+        "enabled": True, "dynamic_theme": True, "wallpaper": True,
+        "ambient_sound": True, "tasks": True, "tint": 40, "volume": 25,
+        "tick_interval": 30, "weather_refresh": 600, "wallpaper_dynamic": True,
+        "wallpaper_shift": 35, "p_work": 25, "p_break": 5, "p_long": 15,
+        "p_cycles": 4, "manual_weather": "auto", "manual_time": "auto",
+        "manual_theme_color": "auto", "run_at_login": False,
+    }
     cfg = config.default_config()
-    out = gui.apply_values_to_config(cfg, {
-        "enabled": False, "dynamic_theme": True, "wallpaper": False,
-        "ambient_sound": True, "tasks": True, "tint": 55.7, "volume": 30.2,
-        "poll_interval": 120, "manual_weather": "storm", "manual_time": "night",
-        "manual_theme_color": "10,20,30", "run_at_login": False,
-    })
+    out = gui.apply_values_to_config(cfg, {**base_vals, "enabled": False,
+        "wallpaper": False, "tint": 55.7, "wallpaper_dynamic": False,
+        "manual_weather": "storm", "manual_time": "night",
+        "manual_theme_color": "10,20,30"})
     check("enabled mapped", out["enabled"] is False)
     check("feature mapped", out["features"]["wallpaper"] is False)
     check("tint rounded", out["weather_tint_strength"] == 56)
+    check("dynamic wallpaper mapped", out["wallpaper_dynamic"] is False)
     check("manual weather mapped", out["manual_weather"] == "storm")
     check("color parsed", out["manual_theme_color"] == [10, 20, 30])
-    out2 = gui.apply_values_to_config(cfg, {**{
-        "enabled": True, "dynamic_theme": True, "wallpaper": True,
-        "ambient_sound": True, "tasks": True, "tint": 40, "volume": 25,
-        "poll_interval": 300, "manual_weather": "auto", "manual_time": "auto",
-        "run_at_login": False}, "manual_theme_color": "auto"})
+    check("pomodoro mapped", out["pomodoro"]["work_min"] == 25)
+    out2 = gui.apply_values_to_config(cfg, base_vals)
     check("auto color => None", out2["manual_theme_color"] is None)
+
+
+def test_pomodoro():
+    section("pomodoro timer")
+    import pomodoro as P
+    p = P.Pomodoro(work_min=1, break_min=1, long_break_min=2, cycles_before_long=2)
+    check("starts idle", p.phase == P.IDLE)
+    p.start()
+    check("start -> work running", p.phase == P.WORK and p.running)
+    check("work completes -> break", p.tick(60) == ("work_complete", P.BREAK))
+    check("break completes -> work", p.tick(60) == ("break_complete", P.WORK))
+    check("2nd work -> long break", p.tick(60) == ("work_complete", P.LONG_BREAK))
+    check("completed_work counted", p.completed_work == 2)
+    p.pause()
+    check("paused does not tick", p.tick(60) is None and not p.running)
+    p.reset()
+    check("reset -> idle", p.phase == P.IDLE and p.completed_work == 0)
+    p2 = P.Pomodoro(work_min=25)
+    p2.start()
+    check("label shows Work mm:ss", p2.label().startswith("Work 25:00"))
+
+
+def test_drift():
+    section("wallpaper dynamic drift")
+    a = wallpaper.shifted_base(40, 80, 180, 0.5, phase=0.0, shift_strength=0.0)
+    b = wallpaper.shifted_base(40, 80, 180, 0.5, phase=0.25, shift_strength=0.0)
+    check("no shift => phase irrelevant", a == b)
+    c = wallpaper.shifted_base(40, 80, 180, 0.5, phase=0.0, shift_strength=0.6)
+    d = wallpaper.shifted_base(40, 80, 180, 0.5, phase=0.25, shift_strength=0.6)
+    check("drift varies with phase", c != d)
+    delta = max(abs(c[i] - d[i]) for i in range(3))
+    check("drift stays subtle (bounded)", 0 < delta <= 60)
+
+
+def test_engine_guards():
+    section("engine change-guards + weather cache")
+    import datetime as dt
+    counts = {"theme": 0, "wall": 0, "play": 0, "wfetch": 0}
+    saved = (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+             sound.play_ambient, sound.set_volume, sound.stop_sound,
+             weather.get_weather)
+    theme.apply_theme_color = lambda *a, **k: counts.__setitem__("theme", counts["theme"] + 1) or "t"
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: counts.__setitem__("wall", counts["wall"] + 1) or True
+    sound.play_ambient = lambda *a, **k: counts.__setitem__("play", counts["play"] + 1)
+    sound.set_volume = lambda *a, **k: None
+    sound.stop_sound = lambda *a, **k: None
+
+    def fake_wx(*a, **k):
+        counts["wfetch"] += 1
+        sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
+        ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
+        return {"condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
+                "temperature": None, "rain": 0, "wind_speed": 0, "cloud_cover": 0}
+    weather.get_weather = fake_wx
+    try:
+        eng = engine.Engine()
+        cfg = config.default_config()           # manual auto -> live (cached)
+        cfg["wallpaper_dynamic"] = False         # static -> guard can skip redraw
+        cfg["wallpaper_min_interval_seconds"] = 0
+        t0 = dt.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+        eng.step(cfg, None, now=t0)
+        eng.step(cfg, None, now=t0)              # identical -> everything skipped
+        check("theme applied once then skipped", counts["theme"] == 1)
+        check("sound played once then skipped", counts["play"] == 1)
+        check("static wallpaper drawn once then skipped", counts["wall"] == 1)
+        check("weather fetched once (cached)", counts["wfetch"] == 1)
+    finally:
+        (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+         sound.play_ambient, sound.set_volume, sound.stop_sound,
+         weather.get_weather) = saved
 
 
 def main():
@@ -325,6 +401,9 @@ def main():
     test_tasks()
     test_autostart()
     test_engine()
+    test_pomodoro()
+    test_drift()
+    test_engine_guards()
     test_gui_helper()
     print(f"\n{'='*40}\nRESULT: {_passed} passed, {_failed} failed")
     return 1 if _failed else 0
