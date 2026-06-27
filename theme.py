@@ -1,8 +1,5 @@
-import ctypes
+import sys
 import struct
-import winreg
-import time
-import os
 from datetime import datetime
 
 
@@ -76,7 +73,7 @@ def scale(color, factor):
 
 
 # ---------------------------------------------------------
-# ACCENT PALETTE GENERATOR
+# ACCENT PALETTE GENERATOR  (Windows)
 # ---------------------------------------------------------
 
 def generate_accent_palette(r, g, b):
@@ -113,6 +110,9 @@ def set_windows_accent(r, g, b):
     ImmersiveColorSet so the change applies immediately without any
     explorer restart.
     """
+    import ctypes
+    import winreg
+
     abgr      = (0xFF << 24) | (b << 16) | (g << 8) | r
     mr, mg, mb = int(r * 0.4), int(g * 0.4), int(b * 0.4)
     abgr_menu = (0xFF << 24) | (mb << 16) | (mg << 8) | mr
@@ -166,22 +166,134 @@ def set_windows_accent(r, g, b):
 
 
 # ---------------------------------------------------------
-# MAIN ENTRY POINT
+# macOS THEME SETTER
+# ---------------------------------------------------------
+#
+# macOS has no taskbar and no public API for an arbitrary-RGB system
+# accent. Two scriptable knobs map cleanly onto this app's intent:
+#   1. Dark / Light appearance  -> driven by the day/night brightness.
+#   2. System accent colour     -> snapped to the nearest macOS named
+#                                   accent derived from the weather colour.
+#
+# Appearance changes apply live; the accent colour is picked up by apps
+# as they next draw (a relaunch shows it everywhere).
+
+# (name, AppleAccentColor int, representative RGB) — names match the
+# tokens macOS expects in AppleHighlightColor.
+_MACOS_ACCENTS = [
+    ("Red",      0,  (255,  82,  89)),
+    ("Orange",   1,  (247, 130,  50)),
+    ("Yellow",   2,  (252, 184,  40)),
+    ("Green",    3,  (102, 186,  73)),
+    ("Blue",     4,  (  0, 122, 255)),
+    ("Purple",   5,  (148,  81, 165)),
+    ("Pink",     6,  (247, 100, 168)),
+    ("Graphite", -1, (142, 142, 147)),
+]
+
+# Below this day/night brightness, switch to Dark mode.
+DARK_MODE_THRESHOLD = 0.5
+
+
+def _nearest_macos_accent(r, g, b):
+    """Pick the macOS named accent whose RGB is closest to (r, g, b)."""
+    return min(
+        _MACOS_ACCENTS,
+        key=lambda a: (r - a[2][0]) ** 2 + (g - a[2][1]) ** 2 + (b - a[2][2]) ** 2,
+    )
+
+
+def set_macos_theme(r, g, b, brightness):
+    """Apply appearance + accent colour on macOS via osascript / defaults."""
+    import subprocess
+
+    # 1. Dark / Light appearance from the day-night brightness curve.
+    dark = brightness < DARK_MODE_THRESHOLD
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             "tell application \"System Events\" to tell appearance preferences "
+             f"to set dark mode to {str(dark).lower()}"],
+            check=True, capture_output=True, text=True, timeout=5,
+        )
+        print(f"[theme] macOS appearance -> {'Dark' if dark else 'Light'} "
+              f"(brightness={brightness:.2f})")
+    except Exception as e:
+        print(f"[theme] Failed to set macOS appearance: {e}")
+
+    # 2. Accent colour -> nearest macOS named accent.
+    name, idx, (cr, cg, cb) = _nearest_macos_accent(r, g, b)
+    try:
+        subprocess.run(
+            ["defaults", "write", "-g", "AppleAccentColor", "-int", str(idx)],
+            check=True, capture_output=True, text=True, timeout=5,
+        )
+        highlight = f"{cr/255:.6f} {cg/255:.6f} {cb/255:.6f} {name}"
+        subprocess.run(
+            ["defaults", "write", "-g", "AppleHighlightColor", "-string", highlight],
+            check=True, capture_output=True, text=True, timeout=5,
+        )
+        print(f"[theme] macOS accent -> {name} (nearest to ({r},{g},{b})). "
+              "Relaunch apps to see it everywhere.")
+    except Exception as e:
+        print(f"[theme] Failed to set macOS accent colour: {e}")
+
+
+# ---------------------------------------------------------
+# COMPUTE + APPLY  (used by the engine)
+# ---------------------------------------------------------
+
+NIGHT_BRIGHTNESS = 0.15
+
+
+def compute_theme_color(condition, sunrise, sunset, is_night_override=None):
+    """
+    Return ((r, g, b), brightness) for the given weather + time of day.
+
+    *is_night_override*: pass True/False to force night/day brightness
+    (used by the manual time-of-day override); None = compute from the
+    sun times.
+    """
+    base = weather_base_color(condition)
+    if is_night_override is True:
+        bright = NIGHT_BRIGHTNESS
+    elif is_night_override is False:
+        bright = 1.0
+    else:
+        bright = brightness_factor(sunrise, sunset)
+    return scale(base, bright), bright
+
+
+def apply_theme_color(r, g, b, brightness):
+    """
+    Apply an already-computed RGB colour using whatever mechanism the
+    current OS supports:
+      * Windows -> taskbar accent colour via the registry
+      * macOS   -> Dark/Light appearance + nearest named accent colour
+    Returns a short human-readable description of what was applied.
+    """
+    if sys.platform == "win32":
+        set_windows_accent(r, g, b)
+        return f"Windows accent ({r},{g},{b})"
+    elif sys.platform == "darwin":
+        set_macos_theme(r, g, b, brightness)
+        name, _idx, _rgb = _nearest_macos_accent(r, g, b)
+        appearance = "Dark" if brightness < DARK_MODE_THRESHOLD else "Light"
+        return f"macOS {appearance} + {name} accent"
+    else:
+        print(f"[theme] Dynamic theme not supported on {sys.platform!r} — skipping.")
+        return "unsupported platform"
+
+
+# ---------------------------------------------------------
+# MAIN ENTRY POINT  (kept for backward compatibility)
 # ---------------------------------------------------------
 
 def apply_dynamic_theme(condition, sunrise, sunset, tint_strength=0.3):
-    """
-    Compute the taskbar colour from weather condition + time of day
-    and apply it instantly via the Windows registry.
-    No external tools required.
-    """
-    base   = weather_base_color(condition)
-    bright = brightness_factor(sunrise, sunset)
-    final  = scale(base, bright)
-
-    r, g, b = final
+    """Compute the theme colour from weather + time of day, then apply it."""
+    (r, g, b), bright = compute_theme_color(condition, sunrise, sunset)
     print(
-        f"[theme] condition={condition!r}  base={base}  "
-        f"brightness={bright:.2f}  -> final=({r},{g},{b})"
+        f"[theme] condition={condition!r}  brightness={bright:.2f}  "
+        f"-> final=({r},{g},{b})"
     )
-    set_windows_accent(r, g, b)
+    return apply_theme_color(r, g, b, bright)

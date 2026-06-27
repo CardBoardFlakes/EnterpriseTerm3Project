@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+
+# Runtime state (generated locally, not source)
+config.json
+tasks.json
+
+# Generated ambient placeholders (synthesised on first run)
+sounds/

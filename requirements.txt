@@ -1,0 +1,14 @@
+# Core runtime dependencies. The app degrades gracefully if these are
+# missing (offline fallback weather; silent audio), but install them for
+# the full experience.
+requests>=2.28      # live weather (Open-Meteo)
+pygame>=2.5         # ambient sound playback
+
+# tkinter (the GUI) ships with the Python standard library but is NOT a pip
+# package. If "import tkinter" fails:
+#   macOS (Homebrew):  brew install python-tk@3.13   (match your python version)
+#   Debian/Ubuntu:     sudo apt install python3-tk
+#   Windows:           included with the python.org installer
+#
+# Pillow is NOT required — wallpaper images are generated with the standard
+# library. No native build tools needed.
