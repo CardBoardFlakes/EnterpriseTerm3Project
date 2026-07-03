@@ -17,8 +17,11 @@ import wave
 import config
 import weather
 import theme
+import json as _json
 import wallpaper
+import webwall
 import sound
+import perf
 import tasks as tasks_mod
 import autostart
 import engine
@@ -149,6 +152,61 @@ def test_wallpaper():
             wallpaper.CACHE_DIR = orig
 
 
+def test_wallpaper_patterns():
+    section("wallpaper patterns + warmth")
+
+    # warmth_factor: none/warm -> 0, cold -> 1, mid -> in-between & monotone.
+    check("warmth none => 0", wallpaper.warmth_factor(None) == 0.0)
+    check("warmth warm => 0", wallpaper.warmth_factor(25) == 0.0)
+    check("warmth freezing => 1", wallpaper.warmth_factor(-10) == 1.0)
+    check("warmth cold is warmer than cool",
+          wallpaper.warmth_factor(0) > wallpaper.warmth_factor(15) > 0)
+
+    # is_animated covers every real condition.
+    check("rain animated", wallpaper.is_animated("rain"))
+    check("storm animated", wallpaper.is_animated("storm"))
+    check("night animated", wallpaper.is_animated("night"))
+    check("unknown not animated", not wallpaper.is_animated("fog"))
+
+    # Every condition's pattern actually marks the buffer (draws something).
+    def paints(cond):
+        w, h = 80, 60
+        raw, stride = wallpaper._build_raw_gradient(w, h, (60, 90, 150), (10, 20, 40))
+        before = bytes(raw)
+        wallpaper._render_pattern(cond, raw, stride, w, h, 0.3, 1.0)
+        return raw != before
+    for cond in ("clear", "cloud", "rain", "storm", "night"):
+        check(f"{cond} pattern paints pixels", paints(cond))
+
+    # Rain trickles: different phase => different pixels.
+    w, h = 80, 60
+    r1, st = wallpaper._build_raw_gradient(w, h, (40, 80, 180), (0, 0, 0))
+    r2, _ = wallpaper._build_raw_gradient(w, h, (40, 80, 180), (0, 0, 0))
+    wallpaper._render_rain(r1, st, w, h, 0.1, 1.0)
+    wallpaper._render_rain(r2, st, w, h, 0.6, 1.0)
+    check("rain moves with phase", r1 != r2)
+
+    with tempfile.TemporaryDirectory() as d:
+        orig = wallpaper.CACHE_DIR
+        wallpaper.CACHE_DIR = d
+        try:
+            # Cold + condition builds a valid PNG whose name carries the condition.
+            p = wallpaper.build_weather_image(40, 80, 180, 0.6, 0.5,
+                                              condition="rain", temperature=-5,
+                                              width=64, height=48)
+            with open(p, "rb") as f:
+                check("patterned png signature", f.read(8) == b"\x89PNG\r\n\x1a\n")
+            check("filename encodes condition", "rain" in os.path.basename(p))
+
+            # patterns=False leaves a plain gradient (no overlay pixels).
+            plain = wallpaper.build_weather_image(40, 80, 180, 0.6, 0.5,
+                                                  condition="storm", patterns=False,
+                                                  width=64, height=48)
+            check("patterns off still builds", os.path.isfile(plain))
+        finally:
+            wallpaper.CACHE_DIR = orig
+
+
 # ---------------------------------------------------------
 # sound
 # ---------------------------------------------------------
@@ -227,6 +285,164 @@ def test_autostart():
         plist = autostart._macos_plist_contents()
         check("plist mentions --background", "--background" in plist)
         check("plist has RunAtLoad", "RunAtLoad" in plist)
+
+
+# ---------------------------------------------------------
+# web wallpaper backend
+# ---------------------------------------------------------
+def test_webwall():
+    section("web wallpaper backend")
+    with tempfile.TemporaryDirectory() as d:
+        orig = webwall.WEB_DIR
+        webwall.WEB_DIR = d
+        try:
+            # ensure_assets writes a versioned, self-contained HTML page.
+            p = webwall.ensure_assets()
+            check("index.html created", os.path.isfile(p))
+            with open(p) as f:
+                html = f.read()
+            check("html is versioned", f"etc-wallpaper v{webwall.HTML_VERSION}" in html)
+            check("html has canvas + loop", "<canvas" in html and "requestAnimationFrame" in html)
+            mtime = os.path.getmtime(p)
+            webwall.ensure_assets()   # idempotent: same version => no rewrite
+            check("ensure_assets idempotent", os.path.getmtime(p) == mtime)
+
+            # build_state: keys present, cold => warmth, colours are RGB triples.
+            st = webwall.build_state(40, 80, 180, 0.8, "rain", -5, 0.4, True, True)
+            for k in ("condition", "top", "bottom", "base", "brightness", "warmth"):
+                check(f"state has {k}", k in st)
+            check("state condition normalised", st["condition"] == "rain")
+            check("cold => warmth applied", st["warmth"] > 0)
+            check("top is rgb triple", len(st["top"]) == 3
+                  and all(0 <= v <= 255 for v in st["top"]))
+            warm_st = webwall.build_state(40, 80, 180, 0.8, "rain", 25, 0.4, True, True)
+            check("warm => no warmth", warm_st["warmth"] == 0)
+
+            # write_state round-trips as valid JSON.
+            webwall.write_state(st)
+            with open(webwall.state_path()) as f:
+                back = _json.load(f)
+            check("weather.json round-trips", back["condition"] == "rain")
+        finally:
+            webwall.WEB_DIR = orig
+
+
+# ---------------------------------------------------------
+# animation governor + animated wallpaper
+# ---------------------------------------------------------
+def test_governor():
+    section("animation governor")
+
+    # Calm machine: keeps rendering, never suspends, sleeps ~ 1/fps.
+    g = perf.AdaptiveGovernor(target_fps=8, load_ceiling=0.85)
+    for _ in range(6):
+        g.observe(0.01, 0.2)          # cheap frames, low load
+    check("calm keeps rendering", g.render and not g.suspended)
+    check("calm sleeps near frame budget", abs(g.sleep - 1 / 8) < 1e-6)
+
+    # High system load for `patience` samples -> throttle then suspend.
+    g = perf.AdaptiveGovernor(target_fps=8, load_ceiling=0.85, patience=3)
+    g.observe(0.01, 1.5)
+    check("first overload throttles, not suspended",
+          not g.suspended and g.sleep > 1 / 8)
+    g.observe(0.01, 1.5)
+    g.observe(0.01, 1.5)
+    check("sustained load suspends", g.suspended and not g.render)
+
+    # Slow frames alone (no load signal) also suspend.
+    g = perf.AdaptiveGovernor(target_fps=10, load_ceiling=0.85, patience=2)
+    g.observe(1.0, None)              # 1s frame vs 0.1s budget
+    g.observe(1.0, None)
+    check("expensive frames suspend without load avg", g.suspended)
+
+    # Recovery: once calm for `recover` probes, resume rendering.
+    g = perf.AdaptiveGovernor(target_fps=8, load_ceiling=0.85,
+                              patience=1, recover=2)
+    g.observe(0.01, 2.0)             # suspend immediately
+    check("suspended under heavy load", g.suspended)
+    g.observe(0.0, 0.1)              # probe 1 (no render while suspended)
+    g.observe(0.0, 0.1)              # probe 2
+    check("resumes after load clears", not g.suspended and g.render)
+
+    # Live reconfigure from the GUI.
+    g.configure(target_fps=15)
+    check("configure updates budget", abs(g.budget - 1 / 15) < 1e-6)
+
+    # system_load is per-core and non-negative (or None on Windows).
+    load = perf.system_load()
+    check("system_load sane", load is None or load >= 0)
+
+
+def test_animated_wallpaper():
+    section("animated wallpaper (mutation stubbed)")
+    calls = {"apply": 0}
+    o_wall = wallpaper.apply_weather_wallpaper
+    o_theme = theme.apply_theme_color
+    o_play, o_stop = sound.play_ambient, sound.stop_sound
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: calls.__setitem__("apply", calls["apply"] + 1) or True
+    theme.apply_theme_color = lambda *a, **k: "stub"
+    sound.play_ambient = lambda *a, **k: None
+    sound.stop_sound = lambda *a, **k: None
+    try:
+        cfg = config.default_config()
+        cfg["manual_weather"] = "rain"        # avoid network
+        cfg["wallpaper_animated"] = True
+
+        check("animation_active on when enabled", engine.animation_active(cfg))
+        cfg2 = config.default_config()
+        cfg2["manual_weather"] = "rain"
+        check("animation_active off by default", not engine.animation_active(cfg2))
+
+        eng = engine.Engine()
+        # A full step in animated mode caches frame inputs but does NOT apply
+        # the wallpaper itself (the governor loop owns that).
+        eng.step(cfg, None, animating=True)
+        check("animated step skips static apply", calls["apply"] == 0)
+        check("render inputs cached", eng._last_render is not None
+              and eng._last_render["condition"] == "rain")
+
+        # A governed frame renders exactly one wallpaper.
+        eng.animate_frame(2.0)
+        check("animate_frame applies one frame", calls["apply"] == 1)
+
+        # Successive frames advance the motion phase.
+        p1 = (1.0 % engine.ANIM_PERIOD) / engine.ANIM_PERIOD
+        p2 = (4.0 % engine.ANIM_PERIOD) / engine.ANIM_PERIOD
+        check("phase advances with time", p1 != p2)
+
+        # No cached inputs yet => nothing to draw.
+        check("fresh engine animates nothing", engine.Engine().animate_frame(0.0) is False)
+
+        # --- web backend: writes JSON, never sets a PNG desktop ----------
+        with tempfile.TemporaryDirectory() as d:
+            o_web = webwall.WEB_DIR
+            webwall.WEB_DIR = d
+            try:
+                webcfg = config.default_config()
+                webcfg["manual_weather"] = "storm"
+                webcfg["wallpaper_backend"] = "web"
+                webcfg["wallpaper_animated"] = True   # should NOT drive in-app loop
+                check("web backend disables in-app animation loop",
+                      not engine.animation_active(webcfg))
+                calls["apply"] = 0
+                eng2 = engine.Engine()
+                st = eng2.step(webcfg, None)
+                check("web step sets no PNG wallpaper", calls["apply"] == 0)
+                check("web step wrote feed", os.path.isfile(webwall.state_path()))
+                check("web step reported in status",
+                      any("web" in a for a in st["applied"]))
+                # Unchanged state => no rewrite second time.
+                mt = os.path.getmtime(webwall.state_path())
+                eng2.step(webcfg, None)
+                check("web feed not rewritten when unchanged",
+                      os.path.getmtime(webwall.state_path()) == mt)
+            finally:
+                webwall.WEB_DIR = o_web
+    finally:
+        wallpaper.apply_weather_wallpaper = o_wall
+        theme.apply_theme_color = o_theme
+        sound.play_ambient = o_play
+        sound.stop_sound = o_stop
 
 
 # ---------------------------------------------------------
@@ -397,9 +613,13 @@ def main():
     test_weather()
     test_theme()
     test_wallpaper()
+    test_wallpaper_patterns()
     test_sound()
     test_tasks()
     test_autostart()
+    test_webwall()
+    test_governor()
+    test_animated_wallpaper()
     test_engine()
     test_pomodoro()
     test_drift()

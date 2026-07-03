@@ -47,7 +47,7 @@ def brightness_factor(sunrise, sunset):
 
 CONDITION_COLORS = {
     "clear": ( 80, 160, 255),   # clear-sky blue
-    "cloud": (100, 110, 130),   # overcast grey-blue
+    "cloud": (165, 152, 170),   # soft warm lilac-grey (not a bleak flat grey)
     "rain":  ( 40,  80, 180),   # stormy blue
     "storm": ( 80,  20, 160),   # deep purple
     "night": ( 20,  30,  80),   # midnight navy

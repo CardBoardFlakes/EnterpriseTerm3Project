@@ -23,6 +23,7 @@ import autostart
 import engine
 import sound
 import pomodoro
+import webwall
 
 
 # ---------------------------------------------------------
@@ -47,6 +48,12 @@ def apply_values_to_config(cfg: dict, values: dict) -> dict:
     cfg["weather_refresh_seconds"] = max(30, int(values["weather_refresh"]))
     cfg["wallpaper_dynamic"] = bool(values["wallpaper_dynamic"])
     cfg["wallpaper_shift_strength"] = int(round(values["wallpaper_shift"]))
+    cfg["wallpaper_patterns"] = bool(values.get("wallpaper_patterns", True))
+    cfg["wallpaper_warmth"] = bool(values.get("wallpaper_warmth", True))
+    cfg["wallpaper_animated"] = bool(values.get("wallpaper_animated", False))
+    cfg["wallpaper_animated_fps"] = max(1, int(round(values.get("wallpaper_animated_fps", 6))))
+    backend = str(values.get("wallpaper_backend", "png")).lower()
+    cfg["wallpaper_backend"] = backend if backend in config.WALLPAPER_BACKENDS else "png"
     cfg["pomodoro"] = {
         "work_min": max(1, int(values["p_work"])),
         "break_min": max(1, int(values["p_break"])),
@@ -105,6 +112,11 @@ class App:
         self.v_weatherrefresh = tk.IntVar(value=int(c.get("weather_refresh_seconds", 600)))
         self.v_wpdynamic = tk.BooleanVar(value=c.get("wallpaper_dynamic", True))
         self.v_wpshift = tk.DoubleVar(value=float(c.get("wallpaper_shift_strength", 35)))
+        self.v_wppatterns = tk.BooleanVar(value=c.get("wallpaper_patterns", True))
+        self.v_wpwarmth = tk.BooleanVar(value=c.get("wallpaper_warmth", True))
+        self.v_wpanimated = tk.BooleanVar(value=c.get("wallpaper_animated", False))
+        self.v_wpfps = tk.DoubleVar(value=float(c.get("wallpaper_animated_fps", 6)))
+        self.v_wpbackend = tk.StringVar(value=c.get("wallpaper_backend", "png"))
         self.v_weather = tk.StringVar(value=c.get("manual_weather", "auto"))
         self.v_time = tk.StringVar(value=c.get("manual_time", "auto"))
         mc = c.get("manual_theme_color")
@@ -165,6 +177,30 @@ class App:
         ttk.Checkbutton(fr, text="Dynamic wallpaper (subtle colour shift)",
                         variable=self.v_wpdynamic).pack(anchor="w", pady=(6, 0))
         self._slider(fr, "Wallpaper shift strength", self.v_wpshift)
+        ttk.Checkbutton(fr, text="Weather patterns (rain, sun, clouds, stars)",
+                        variable=self.v_wppatterns).pack(anchor="w", pady=(6, 0))
+        ttk.Checkbutton(fr, text="Warm palette when it's cold outside",
+                        variable=self.v_wpwarmth).pack(anchor="w")
+        ttk.Checkbutton(fr, text="Animated wallpaper (smooth motion — uses more "
+                                 "power, auto-pauses under load)",
+                        variable=self.v_wpanimated).pack(anchor="w", pady=(6, 0))
+        self._slider(fr, "Animation frame rate", self.v_wpfps,
+                     from_=1, to=30, unit="fps")
+
+        back = ttk.LabelFrame(fr, text="Wallpaper backend", padding=8)
+        back.pack(fill="x", pady=4)
+        row = ttk.Frame(back); row.pack(fill="x")
+        ttk.Label(row, text="Render with:", width=12).pack(side="left")
+        ttk.Combobox(row, textvariable=self.v_wpbackend, state="readonly", width=8,
+                     values=config.WALLPAPER_BACKENDS).pack(side="left")
+        ttk.Button(row, text="Open web wallpaper folder…",
+                   command=self.on_open_webwall).pack(side="right")
+        ttk.Label(back, wraplength=440, foreground="#666",
+                  text="png = built-in (static or in-app animation). "
+                       "web = maintain an HTML/canvas wallpaper for an external "
+                       "engine (ScreenPlay, Lively, or Plash) to render with "
+                       "smooth GPU animation — point it at the index.html in the "
+                       "folder above.").pack(anchor="w", pady=(6, 0))
 
         ivfr = ttk.Frame(fr)
         ivfr.pack(fill="x", pady=6)
@@ -180,13 +216,14 @@ class App:
                         command=self.on_toggle_autostart).pack(anchor="w", pady=8)
         return fr
 
-    def _slider(self, parent, label, var):
+    def _slider(self, parent, label, var, from_=0, to=100, unit="%"):
         fr = ttk.LabelFrame(parent, text=label, padding=6)
         fr.pack(fill="x", pady=4)
-        val = ttk.Label(fr, text=f"{int(var.get())} %", width=5)
+        fmt = (lambda: f"{int(var.get())} {unit}".rstrip())
+        val = ttk.Label(fr, text=fmt(), width=6)
         val.pack(side="right")
-        var.trace_add("write", lambda *_: val.config(text=f"{int(var.get())} %"))
-        ttk.Scale(fr, from_=0, to=100, orient="horizontal",
+        var.trace_add("write", lambda *_: val.config(text=fmt()))
+        ttk.Scale(fr, from_=from_, to=to, orient="horizontal",
                   variable=var).pack(fill="x", side="left", expand=True)
 
     def _tab_override(self, parent):
@@ -388,6 +425,11 @@ class App:
             "weather_refresh": self.v_weatherrefresh.get(),
             "wallpaper_dynamic": self.v_wpdynamic.get(),
             "wallpaper_shift": self.v_wpshift.get(),
+            "wallpaper_patterns": self.v_wppatterns.get(),
+            "wallpaper_warmth": self.v_wpwarmth.get(),
+            "wallpaper_animated": self.v_wpanimated.get(),
+            "wallpaper_animated_fps": self.v_wpfps.get(),
+            "wallpaper_backend": self.v_wpbackend.get(),
             "p_work": self.v_pwork.get(),
             "p_break": self.v_pbreak.get(),
             "p_long": self.v_plong.get(),
@@ -404,6 +446,17 @@ class App:
             self.v_status.set("Settings saved.")
         else:
             messagebox.showerror("Error", "Could not write config.json.")
+
+    def on_open_webwall(self):
+        """Create the HTML wallpaper assets and reveal them in the file manager."""
+        webwall.ensure_assets()
+        if webwall.open_folder():
+            self.v_status.set(f"Web wallpaper ready: {webwall.html_path()}")
+        else:
+            messagebox.showinfo(
+                "Web wallpaper",
+                "Point your wallpaper engine (ScreenPlay / Lively / Plash) at:\n\n"
+                f"{webwall.html_path()}")
 
     def on_toggle_autostart(self):
         ok = autostart.set_autostart(self.v_runlogin.get())
