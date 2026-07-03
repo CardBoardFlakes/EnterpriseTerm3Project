@@ -31,6 +31,20 @@ DEFAULTS = {
     "wallpaper_dynamic": True,            # enable the slow colour shift
     "wallpaper_shift_strength": 35,       # percent 0-100 — drift amplitude
     "wallpaper_min_interval_seconds": 45, # never redraw more often than this
+    "wallpaper_patterns": True,           # weather-specific patterns (rain, sun, stars…)
+    "wallpaper_warmth": True,             # warm the palette when it's cold outside
+    # Wallpaper backend:
+    #   "png" — built-in: generate an image and set it as the desktop.
+    #   "web" — maintain an HTML/canvas wallpaper + weather.json feed for an
+    #           external engine (ScreenPlay / Lively / Plash) to render with
+    #           smooth GPU animation. The app itself stays near-zero cost.
+    "wallpaper_backend": "png",
+    # Animated wallpaper: smooth, continuously redrawn motion. Costs real CPU,
+    # so a load governor throttles the frame rate and fully pauses it (falling
+    # back to a static frame) whenever the machine is struggling.
+    "wallpaper_animated": False,          # off by default — opt in
+    "wallpaper_animated_fps": 6,          # target frames/sec when unthrottled
+    "wallpaper_load_ceiling": 85,         # percent per-core load → throttle/pause above this
 
     # Sound.
     "sound_volume": 25,           # percent 0-100 — "subtle" by default
@@ -64,6 +78,7 @@ DEFAULTS = {
 WEATHER_CHOICES = ["auto", "clear", "cloud", "rain", "storm", "night"]
 TIME_CHOICES = ["auto", "day", "night"]
 FEATURE_KEYS = ["dynamic_theme", "wallpaper", "ambient_sound", "tasks"]
+WALLPAPER_BACKENDS = ["png", "web"]
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

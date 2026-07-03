@@ -17,7 +17,9 @@ import config
 import weather
 import theme
 import wallpaper
+import webwall
 import sound
+import perf
 import tasks as tasks_mod
 
 
@@ -129,7 +131,20 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
 
     # --- Apply wallpaper ----------------------------------------------
     if config.feature_enabled(cfg, "wallpaper"):
-        if wallpaper.apply_weather_wallpaper(r, g, b, brightness, tint):
+        pat_cond = ("night" if is_night and not any(k in condition for k in ("rain", "storm"))
+                    else condition)
+        patterns = bool(cfg.get("wallpaper_patterns", True))
+        warmth = bool(cfg.get("wallpaper_warmth", True))
+        if (cfg.get("wallpaper_backend") or "png").lower() == "web":
+            webwall.ensure_assets()
+            webwall.write_state(webwall.build_state(
+                r, g, b, brightness, pat_cond, eff.get("temperature"),
+                tint, warmth, patterns))
+            status["applied"].append(f"wallpaper: web/{pat_cond}")
+        elif wallpaper.apply_weather_wallpaper(
+                r, g, b, brightness, tint, condition=pat_cond,
+                temperature=eff.get("temperature"),
+                patterns=patterns, warmth=warmth):
             status["applied"].append("wallpaper")
 
     # --- Ambient sound -------------------------------------------------
@@ -154,10 +169,22 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
 # ---------------------------------------------------------
 
 DRIFT_PERIOD = 600.0   # seconds for one full subtle wallpaper colour cycle
+ANIM_PERIOD = 6.0      # seconds for one pattern-motion cycle in animated mode
 
 
 def _color_delta(a, b):
     return max(abs(a[0] - b[0]), abs(a[1] - b[1]), abs(a[2] - b[2]))
+
+
+def animation_active(cfg) -> bool:
+    """
+    True when the *in-app* PNG animation loop should run. The web backend is
+    animated by the external engine, so the in-app fps loop stays off for it.
+    """
+    return (bool(cfg.get("enabled", True))
+            and config.feature_enabled(cfg, "wallpaper")
+            and bool(cfg.get("wallpaper_animated", False))
+            and (cfg.get("wallpaper_backend") or "png").lower() == "png")
 
 
 class Engine:
@@ -179,6 +206,8 @@ class Engine:
         self._sound_on = False
         self._last_wall_key = None     # (drifted_rgb, brightness_bucket) last drawn
         self._last_wall_at = None
+        self._last_render = None       # cached frame inputs for animated redraws
+        self._last_web = None          # last web-backend state written
 
     # --- weather (cached) ---------------------------------------------
     def _effective(self, cfg, now):
@@ -198,23 +227,42 @@ class Engine:
         if stale:
             self._weather = weather.get_effective_weather(cfg)
             self._weather_at = now
+
+        # Re-derive the cheap, time-dependent bit against *this* step's clock —
+        # for both fresh and cached weather — so day/night stays consistent
+        # with `now` (and the engine is deterministic when `now` is injected).
+        w = self._weather
+        if manual_t == "night":
+            w["is_night"] = True
+        elif manual_t == "day":
+            w["is_night"] = False
         else:
-            # Re-evaluate only the cheap, time-dependent bits each step.
-            w = self._weather
-            if manual_t == "night":
-                w["is_night"] = True
-            elif manual_t == "day":
-                w["is_night"] = False
-            else:
-                w["is_night"] = weather._is_night(w["sunrise"], w["sunset"], now)
-        return self._weather
+            w["is_night"] = weather._is_night(w["sunrise"], w["sunset"], now)
+        return w
 
     def _phase(self, now):
         secs = now.hour * 3600 + now.minute * 60 + now.second
         return (secs % DRIFT_PERIOD) / DRIFT_PERIOD
 
+    # --- animated wallpaper -------------------------------------------
+    def animate_frame(self, mono=0.0):
+        """
+        Redraw one animation frame from the cached render inputs, advancing the
+        pattern motion by *mono* (a monotonic-clock reading). Cheap: no weather
+        or theme recompute. Returns True if a frame was applied.
+        """
+        lr = self._last_render
+        if not lr:
+            return False
+        phase = (mono % ANIM_PERIOD) / ANIM_PERIOD
+        return wallpaper.apply_weather_wallpaper(
+            lr["r"], lr["g"], lr["b"], lr["brightness"], lr["tint"],
+            phase=phase, shift_strength=lr["shift"], condition=lr["condition"],
+            temperature=lr["temperature"], patterns=lr["patterns"],
+            warmth=lr["warmth"])
+
     # --- one cheap step -----------------------------------------------
-    def step(self, cfg, store=None, now=None):
+    def step(self, cfg, store=None, now=None, animating=False):
         now = now or datetime.datetime.now()
         status = {
             "time": now.isoformat(timespec="seconds"),
@@ -262,21 +310,60 @@ class Engine:
         if config.feature_enabled(cfg, "wallpaper"):
             dynamic = bool(cfg.get("wallpaper_dynamic", True))
             shift = (cfg.get("wallpaper_shift_strength", 35) / 100.0) if dynamic else 0.0
-            phase = self._phase(now)
-            target = wallpaper.shifted_base(r, g, b, tint, phase, shift)
-            bucket = round(brightness, 2)
-            min_iv = max(5, int(cfg.get("wallpaper_min_interval_seconds", 45)))
-            due = (self._last_wall_at is None
-                   or (now - self._last_wall_at).total_seconds() >= min_iv)
-            changed = (self._last_wall_key is None
-                       or self._last_wall_key[1] != bucket
-                       or _color_delta(target, self._last_wall_key[0]) >= 2)
-            if due and changed:
-                if wallpaper.apply_weather_wallpaper(r, g, b, brightness, tint,
-                                                     phase=phase, shift_strength=shift):
-                    self._last_wall_key = (target, bucket)
-                    self._last_wall_at = now
-                    status["applied"].append("wallpaper")
+            patterns = bool(cfg.get("wallpaper_patterns", True))
+            warmth = bool(cfg.get("wallpaper_warmth", True))
+            # Show a night sky whenever it's dark out, unless it's actively
+            # raining/storming (those stay themselves even after sunset).
+            pat_cond = ("night" if is_night and not any(k in condition for k in ("rain", "storm"))
+                        else condition)
+            # Cache what a frame needs so the animation loop can redraw cheaply
+            # (varying only the phase) without recomputing weather/theme.
+            self._last_render = {
+                "r": r, "g": g, "b": b, "brightness": brightness, "tint": tint,
+                "shift": shift, "condition": pat_cond,
+                "temperature": eff.get("temperature"),
+                "patterns": patterns, "warmth": warmth,
+            }
+            backend = (cfg.get("wallpaper_backend") or "png").lower()
+            if backend == "web":
+                # Hand off to an external engine: keep the HTML wallpaper in
+                # place and refresh the JSON feed only when the state changes.
+                try:
+                    webwall.ensure_assets()
+                    state = webwall.build_state(r, g, b, brightness, pat_cond,
+                                                eff.get("temperature"), tint,
+                                                warmth, patterns)
+                    if state != self._last_web:
+                        webwall.write_state(state)
+                        self._last_web = state
+                        status["applied"].append(f"wallpaper: web/{pat_cond}")
+                except Exception as e:
+                    print(f"[engine] web wallpaper failed: {e}")
+
+            # In animated mode the governor-driven loop owns the wallpaper; the
+            # static guarded path below would just fight it, so skip it.
+            elif not animating:
+                phase = self._phase(now)
+                target = wallpaper.shifted_base(r, g, b, tint, phase, shift)
+                bucket = round(brightness, 2)
+                min_iv = max(5, int(cfg.get("wallpaper_min_interval_seconds", 45)))
+                due = (self._last_wall_at is None
+                       or (now - self._last_wall_at).total_seconds() >= min_iv)
+                # A moving pattern is worth a redraw on the interval even when
+                # the base colour is steady (e.g. manual rain) — that's motion.
+                moving = dynamic and patterns and wallpaper.is_animated(pat_cond)
+                changed = (self._last_wall_key is None
+                           or self._last_wall_key[1] != bucket
+                           or moving
+                           or _color_delta(target, self._last_wall_key[0]) >= 2)
+                if due and changed:
+                    if wallpaper.apply_weather_wallpaper(
+                            r, g, b, brightness, tint, phase=phase, shift_strength=shift,
+                            condition=pat_cond, temperature=eff.get("temperature"),
+                            patterns=patterns, warmth=warmth):
+                        self._last_wall_key = (target, bucket)
+                        self._last_wall_at = now
+                        status["applied"].append("wallpaper")
 
         # --- sound: (re)start only when the chosen file changes --------
         if config.feature_enabled(cfg, "ambient_sound"):
@@ -319,9 +406,12 @@ class EngineThread(threading.Thread):
         self.tasks_path = tasks_path
         self.on_status = on_status
         self.engine = Engine()
+        self.governor = perf.AdaptiveGovernor()
         self._stop = threading.Event()
         self._wake = threading.Event()
         self.last_status = None
+        self._last_full = None      # monotonic time of the last full evaluation
+        self._anim_paused = False   # governor has us on a static frame
 
     def stop(self):
         self._stop.set()
@@ -329,37 +419,120 @@ class EngineThread(threading.Thread):
 
     def wake(self):
         """Force an immediate re-evaluation (e.g. after Apply Now)."""
+        self._last_full = None
         self._wake.set()
 
     def run(self):
         while not self._stop.is_set():
             cfg = config.load_config(self.config_path)
             store = tasks_mod.TaskStore(self.tasks_path)
-            try:
-                self.last_status = self.engine.step(cfg, store)
-                if self.on_status:
-                    self.on_status(self.last_status)
-            except Exception as e:
-                print(f"[engine] step failed: {e}")
-            interval = max(5, int(cfg.get("tick_interval_seconds", 30)))
-            self._wake.wait(timeout=interval)
+            now = datetime.datetime.now()
+            mono = time.monotonic()
+            tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
+            animated = animation_active(cfg)
+
+            # Full weather/theme/sound/tasks evaluation on the normal cadence.
+            if self._last_full is None or (mono - self._last_full) >= tick_iv:
+                try:
+                    self.last_status = self.engine.step(cfg, store, now,
+                                                        animating=animated)
+                    if self.on_status:
+                        self.on_status(self.last_status)
+                except Exception as e:
+                    print(f"[engine] step failed: {e}")
+                self._last_full = mono
+
+            if animated:
+                sleep = self._animate_once(cfg)
+            else:
+                self._anim_paused = False
+                sleep = tick_iv
+
+            self._wake.wait(timeout=max(0.05, min(sleep, tick_iv)))
             self._wake.clear()
         sound.stop_sound()
+
+    def _animate_once(self, cfg):
+        """Render one governed animation frame; return the seconds to sleep."""
+        self.governor.configure(
+            target_fps=int(cfg.get("wallpaper_animated_fps", 6)),
+            load_ceiling=float(cfg.get("wallpaper_load_ceiling", 85)) / 100.0)
+        load = perf.system_load()
+        render_dt = 0.0
+        if self.governor.render:
+            t0 = time.monotonic()
+            try:
+                self.engine.animate_frame(t0)
+                self._anim_paused = False
+            except Exception as e:
+                print(f"[engine] anim frame failed: {e}")
+            render_dt = time.monotonic() - t0
+
+        self.governor.observe(render_dt, load)
+
+        # Just suspended: settle on one clean static frame so the desktop
+        # isn't frozen mid-animation while we back off.
+        if self.governor.suspended and not self._anim_paused:
+            try:
+                self.engine.animate_frame(0.0)
+            except Exception:
+                pass
+            self._anim_paused = True
+            print("[engine] Animation paused — system under load. Will resume "
+                  "automatically.")
+        return self.governor.sleep
 
 
 def run_forever(config_path=config.CONFIG_FILE, tasks_path=tasks_mod.TASKS_FILE):
     """Headless loop used by ``main.py --background``."""
     print("[engine] Background mode started.")
     eng = Engine()
+    gov = perf.AdaptiveGovernor()
+    last_full = None
+    paused = False
     try:
         while True:
             cfg = config.load_config(config_path)
             store = tasks_mod.TaskStore(tasks_path)
-            try:
-                eng.step(cfg, store)
-            except Exception as e:
-                print(f"[engine] step failed: {e}")
-            time.sleep(max(5, int(cfg.get("tick_interval_seconds", 30))))
+            mono = time.monotonic()
+            tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
+            animated = animation_active(cfg)
+
+            if last_full is None or (mono - last_full) >= tick_iv:
+                try:
+                    eng.step(cfg, store, animating=animated)
+                except Exception as e:
+                    print(f"[engine] step failed: {e}")
+                last_full = mono
+
+            if animated:
+                gov.configure(
+                    target_fps=int(cfg.get("wallpaper_animated_fps", 6)),
+                    load_ceiling=float(cfg.get("wallpaper_load_ceiling", 85)) / 100.0)
+                load = perf.system_load()
+                render_dt = 0.0
+                if gov.render:
+                    t0 = time.monotonic()
+                    try:
+                        eng.animate_frame(t0)
+                        paused = False
+                    except Exception as e:
+                        print(f"[engine] anim frame failed: {e}")
+                    render_dt = time.monotonic() - t0
+                gov.observe(render_dt, load)
+                if gov.suspended and not paused:
+                    try:
+                        eng.animate_frame(0.0)
+                    except Exception:
+                        pass
+                    paused = True
+                    print("[engine] Animation paused — system under load.")
+                sleep = min(gov.sleep, tick_iv)
+            else:
+                paused = False
+                sleep = tick_iv
+
+            time.sleep(max(0.05, sleep))
     except KeyboardInterrupt:
         sound.stop_sound()
         print("[engine] Background mode stopped.")

@@ -10,6 +10,24 @@ reflect the weather and time of day outside.
   - macOS: Dark/Light appearance by time of day + nearest named accent colour.
 - **Weather wallpaper** — generates a sky-gradient desktop background that
   matches the weather and brightness (pure standard library, no Pillow).
+- **Weather patterns** — a distinct, gently-moving overlay per condition:
+  trickling rain streaks, slanted rain + lightning in storms, a drifting warm
+  sun on clear days, warm cream puffs when cloudy, a moon + twinkling stars at
+  night. Elements are drawn sparsely (cost scales with element count, not pixel
+  count) and animate via the redraw cadence, so CPU stays negligible. Toggle it
+  off to fall back to a plain gradient.
+- **Cold-weather warmth** — when it's cold outside the whole palette is nudged
+  toward a cosy amber (stronger the colder it gets) so the desktop feels warm,
+  and the cloudy sky is a soft warm lilac-grey rather than a bleak flat grey.
+- **Animated wallpaper (opt-in)** — a toggle that continuously redraws the
+  wallpaper for smooth pattern motion (rain trickling, clouds drifting, stars
+  twinkling) at a configurable frame rate. It deliberately uses more CPU, so a
+  **load governor** watches frame cost + system load: it throttles the frame
+  rate as the machine gets busy and fully **pauses** animation (dropping back
+  to a static frame) when it's struggling, then resumes automatically once the
+  load clears. Off by default. For genuinely smooth GPU animation, drive an
+  external engine (ScreenPlay / Lively / Plash) from this app's weather state —
+  the in-app path favours safety and low overhead over cinematic smoothness.
 - **Dynamic background** — a slow, subtle hue/brightness drift so the desktop
   feels alive without being distracting (toggle + strength slider).
 - **Ambient sound** — subtle weather/time soundscapes (rain, wind, birds,
@@ -60,6 +78,7 @@ update immediately.
 | `weather.py`   | Live weather + manual override + offline fallback       |
 | `theme.py`     | Compute colour + apply accent (Windows / macOS)         |
 | `wallpaper.py` | Generate + set the (drifting) weather wallpaper         |
+| `perf.py`      | Load governor that throttles/pauses animated wallpaper  |
 | `sound.py`     | Ambient sound selection, playback, placeholder synth    |
 | `pomodoro.py`  | Productivity timer state machine                        |
 | `tasks.py`     | Tasks & schedules store                                 |
@@ -74,6 +93,7 @@ Settings are stored in `config.json`; tasks in `tasks.json`.
 python tests.py
 ```
 
-A headless suite (81 checks) covering config, weather override, theme,
-wallpaper PNG + dynamic drift, sound, tasks, autostart, the Pomodoro timer,
-and the engine's change-guards (all system mutations are stubbed).
+A headless suite (114 checks) covering config, weather override, theme,
+wallpaper PNG + dynamic drift + weather patterns/warmth, the animation load
+governor + animated-wallpaper wiring, sound, tasks, autostart, the Pomodoro
+timer, and the engine's change-guards (all system mutations are stubbed).
