@@ -7,8 +7,10 @@ due tasks. ``EngineThread`` runs that on a timer in the background for the
 GUI; ``run_forever`` does the same for the headless ``--background`` mode.
 """
 
+import os
 import sys
 import time
+import random
 import threading
 import subprocess
 import datetime
@@ -20,6 +22,7 @@ import wallpaper
 import webwall
 import sound
 import perf
+import profiles
 import tasks as tasks_mod
 
 
@@ -96,6 +99,9 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
         status["note"] = "master switch off"
         return status
 
+    cfg = profiles.overlay_config(cfg, cfg.get("active_profile"))
+    status["profile"] = (cfg.get("active_profile") or "none")
+
     eff = weather.get_effective_weather(cfg)
     condition = eff["condition"]
     is_night = eff["is_night"]
@@ -103,26 +109,40 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
         "condition": condition,
         "is_night": is_night,
         "source": eff.get("source"),
+        "condition_source": eff.get("condition_source"),
     })
+    status.update({k: eff.get(k) for k in weather.MEASUREMENT_KEYS})
 
     # --- Resolve theme colour -----------------------------------------
     manual_time = (cfg.get("manual_time") or "auto").lower()
+    phase = theme.normalize_phase(manual_time) if manual_time != "auto" else None
     night_override = None if manual_time == "auto" else is_night
+    season = _season_now(cfg, now)
+    hc = (cfg.get("accessibility_mode") or "none").lower() == "high_contrast"
+    status["season"] = season
 
     manual_color = cfg.get("manual_theme_color")
     if manual_color and len(manual_color) == 3:
         r, g, b = manual_color
-        brightness = theme.NIGHT_BRIGHTNESS if is_night else 1.0
+        brightness = theme.phase_light(phase)[0] if phase else (
+            theme.NIGHT_BRIGHTNESS if is_night else 1.0)
+        if hc:
+            r, g, b = theme.high_contrast((r, g, b))
         status["color_source"] = "manual"
     else:
         (r, g, b), brightness = theme.compute_theme_color(
-            condition, eff["sunrise"], eff["sunset"], is_night_override=night_override
+            condition, eff["sunrise"], eff["sunset"],
+            is_night_override=night_override, phase=phase, now=now, season=season
         )
+        r, g, b = _style_color((r, g, b), cfg)
         status["color_source"] = "computed"
     status["color"] = [r, g, b]
+    status["phase"] = phase or theme.compute_day_phase(eff["sunrise"], eff["sunset"], now)
     status["brightness"] = round(brightness, 3)
+    # Sky-body position: sun by day, moon by night (both arc east -> west).
+    sun = theme.celestial_fraction(phase, eff["sunrise"], eff["sunset"], now)
 
-    tint = cfg.get("weather_tint_strength", 40) / 100.0
+    tint = 1.0 if hc else cfg.get("weather_tint_strength", 40) / 100.0
 
     # --- Apply theme ---------------------------------------------------
     if config.feature_enabled(cfg, "dynamic_theme"):
@@ -131,8 +151,7 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
 
     # --- Apply wallpaper ----------------------------------------------
     if config.feature_enabled(cfg, "wallpaper"):
-        pat_cond = ("night" if is_night and not any(k in condition for k in ("rain", "storm"))
-                    else condition)
+        pat_cond = _pattern_condition(condition, is_night)
         patterns = bool(cfg.get("wallpaper_patterns", True))
         warmth = bool(cfg.get("wallpaper_warmth", True))
         if (cfg.get("wallpaper_backend") or "png").lower() == "web":
@@ -140,17 +159,28 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
             webwall.write_state(webwall.build_state(
                 r, g, b, brightness, pat_cond, eff.get("temperature"),
                 tint, warmth, patterns))
+            print("[wallpaper] web backend (Ultra): wrote weather.json — your "
+                  "desktop only changes if ScreenPlay/Lively/Plash is running "
+                  "that wallpaper. Switch Wallpaper motion to Off or Smooth to "
+                  "set the desktop directly.")
             status["applied"].append(f"wallpaper: web/{pat_cond}")
         elif wallpaper.apply_weather_wallpaper(
                 r, g, b, brightness, tint, condition=pat_cond,
                 temperature=eff.get("temperature"),
-                patterns=patterns, warmth=warmth):
+                patterns=patterns, warmth=warmth, sun=sun,
+                multi=bool(cfg.get("multi_monitor", True))):
             status["applied"].append("wallpaper")
+    else:
+        print("[wallpaper] feature is OFF — tick 'Weather wallpaper' on the "
+              "Dashboard to change the desktop background.")
 
     # --- Ambient sound -------------------------------------------------
     if config.feature_enabled(cfg, "ambient_sound"):
-        sound.play_ambient(condition, is_night, cfg.get("sound_volume", 25))
-        status["applied"].append(f"sound: {sound.select_ambient(condition, is_night)}")
+        loop = (cfg.get("sound_mode") or "loop").lower() != "random"
+        path = sound.pick_variant(condition, is_night)
+        sound.play_ambient(condition, is_night, cfg.get("sound_volume", 25),
+                           path=path, loop=loop)
+        status["applied"].append(f"sound: {os.path.basename(path)}")
     else:
         sound.stop_sound()
 
@@ -174,6 +204,45 @@ ANIM_PERIOD = 6.0      # seconds for one pattern-motion cycle in animated mode
 
 def _color_delta(a, b):
     return max(abs(a[0] - b[0]), abs(a[1] - b[1]), abs(a[2] - b[2]))
+
+
+def _ease_rgb(cur, tgt, dt, duration):
+    """Exponentially move *cur* toward *tgt*; converges in ~*duration* seconds."""
+    tgt = tuple(int(c) for c in tgt)
+    if cur is None or duration <= 0:
+        return tgt
+    a = 1.0 - 0.5 ** (dt / max(0.05, duration / 3.0))
+    a = max(0.0, min(1.0, a))
+    return tuple(cur[i] + (tgt[i] - cur[i]) * a for i in range(3))
+
+
+def _season_now(cfg, now):
+    """Season name for the configured hemisphere, or None when disabled."""
+    if not cfg.get("seasonal_themes", True):
+        return None
+    lat = (cfg.get("location") or {}).get("lat")
+    hemi = theme.hemisphere_for(lat, cfg.get("hemisphere", "auto"))
+    return theme.season_for(now.date(), hemi)
+
+
+def _style_color(rgb, cfg):
+    """Apply the active profile's mood + the accessibility mode to a colour."""
+    rgb = profiles.adjust_color(rgb, cfg.get("active_profile"))
+    if (cfg.get("accessibility_mode") or "none").lower() == "high_contrast":
+        rgb = theme.high_contrast(rgb)
+    return tuple(int(c) for c in rgb)
+
+
+def _pattern_condition(condition, is_night):
+    """
+    The condition the *wallpaper* should draw. At night we show a night sky
+    (unless it's actively raining/storming, which keep their own look), and a
+    cloudy night gets its own moon-behind-clouds look so it differs from clear.
+    """
+    c = (condition or "").lower()
+    if is_night and not any(k in c for k in ("rain", "storm")):
+        return "cloudnight" if "cloud" in c else "night"
+    return condition
 
 
 def animation_active(cfg) -> bool:
@@ -200,45 +269,38 @@ class Engine:
 
     def __init__(self):
         self._weather = None
+        self._live = None              # last live measurements (unaffected by overrides)
         self._weather_at = None
         self._last_theme = None        # theme signature last applied
         self._last_sound = None        # ambient path last played
         self._sound_on = False
+        self._sound_base = None        # ambient base currently selected
+        self._next_sound_at = None     # random mode: when to play next
         self._last_wall_key = None     # (drifted_rgb, brightness_bucket) last drawn
         self._last_wall_at = None
         self._last_render = None       # cached frame inputs for animated redraws
         self._last_web = None          # last web-backend state written
+        self._eased_rgb = None         # displayed colour, eased toward target
+        self._eased_at = None          # when the eased colour was last updated
+        self.transitioning = False     # True while a colour cross-fade is in progress
 
     # --- weather (cached) ---------------------------------------------
     def _effective(self, cfg, now):
-        manual_w = (cfg.get("manual_weather") or "auto").lower()
-        manual_t = (cfg.get("manual_time") or "auto").lower()
-
-        # Manual weather needs no network — always cheap to recompute.
-        if manual_w != "auto":
-            self._weather = weather.get_effective_weather(cfg)
-            self._weather_at = now
-            return self._weather
-
+        """
+        Live measurements are fetched only every ``weather_refresh_seconds``
+        and cached — *regardless* of manual overrides, so the real data keeps
+        flowing while the user forces a look. The manual condition/time
+        overrides are re-applied cheaply on top every step.
+        """
         refresh = max(30, int(cfg.get("weather_refresh_seconds", 600)))
-        stale = (self._weather is None or self._weather_at is None
-                 or self._weather.get("source") == "fallback"
+        stale = (self._live is None or self._weather_at is None
+                 or self._live.get("source") == "fallback"
                  or (now - self._weather_at).total_seconds() >= refresh)
         if stale:
-            self._weather = weather.get_effective_weather(cfg)
+            self._live = weather.get_live_weather(cfg)
             self._weather_at = now
-
-        # Re-derive the cheap, time-dependent bit against *this* step's clock —
-        # for both fresh and cached weather — so day/night stays consistent
-        # with `now` (and the engine is deterministic when `now` is injected).
-        w = self._weather
-        if manual_t == "night":
-            w["is_night"] = True
-        elif manual_t == "day":
-            w["is_night"] = False
-        else:
-            w["is_night"] = weather._is_night(w["sunrise"], w["sunset"], now)
-        return w
+        self._weather = weather.apply_overrides(self._live, cfg, now)
+        return self._weather
 
     def _phase(self, now):
         secs = now.hour * 3600 + now.minute * 60 + now.second
@@ -259,7 +321,7 @@ class Engine:
             lr["r"], lr["g"], lr["b"], lr["brightness"], lr["tint"],
             phase=phase, shift_strength=lr["shift"], condition=lr["condition"],
             temperature=lr["temperature"], patterns=lr["patterns"],
-            warmth=lr["warmth"])
+            warmth=lr["warmth"], sun=lr.get("sun"), multi=lr.get("multi", True))
 
     # --- one cheap step -----------------------------------------------
     def step(self, cfg, store=None, now=None, animating=False):
@@ -278,25 +340,58 @@ class Engine:
             status["note"] = "master switch off"
             return status
 
+        # Active mood profile overlays sound volume + motion.
+        cfg = profiles.overlay_config(cfg, cfg.get("active_profile"))
+        status["profile"] = (cfg.get("active_profile") or "none")
+
         eff = self._effective(cfg, now)
         condition, is_night = eff["condition"], eff["is_night"]
         status.update({"condition": condition, "is_night": is_night,
-                       "source": eff.get("source")})
+                       "source": eff.get("source"),
+                       "condition_source": eff.get("condition_source")})
+        status.update({k: eff.get(k) for k in weather.MEASUREMENT_KEYS})
 
         manual_time = (cfg.get("manual_time") or "auto").lower()
+        phase = theme.normalize_phase(manual_time) if manual_time != "auto" else None
         night_override = None if manual_time == "auto" else is_night
+        season = _season_now(cfg, now)
+        hc = (cfg.get("accessibility_mode") or "none").lower() == "high_contrast"
+        status["season"] = season
         manual_color = cfg.get("manual_theme_color")
         if manual_color and len(manual_color) == 3:
-            r, g, b = manual_color
-            brightness = theme.NIGHT_BRIGHTNESS if is_night else 1.0
+            tr, tg, tb = manual_color
+            brightness = theme.phase_light(phase)[0] if phase else (
+                theme.NIGHT_BRIGHTNESS if is_night else 1.0)
+            if hc:                                  # accessibility still applies
+                tr, tg, tb = theme.high_contrast((tr, tg, tb))
             status["color_source"] = "manual"
         else:
-            (r, g, b), brightness = theme.compute_theme_color(
-                condition, eff["sunrise"], eff["sunset"], is_night_override=night_override)
+            (tr, tg, tb), brightness = theme.compute_theme_color(
+                condition, eff["sunrise"], eff["sunset"],
+                is_night_override=night_override, phase=phase, now=now, season=season)
+            tr, tg, tb = _style_color((tr, tg, tb), cfg)   # profile mood + a11y
             status["color_source"] = "computed"
+
+        # Gradual transitions: ease the *displayed* colour toward the target so
+        # weather/time changes cross-fade instead of snapping.
+        smooth = bool(cfg.get("smooth_transitions", True))
+        dur = max(0, int(cfg.get("theme_transition_seconds", 8)))
+        if smooth and dur > 0:
+            dt = (now - self._eased_at).total_seconds() if self._eased_at else dur
+            self._eased_rgb = _ease_rgb(self._eased_rgb, (tr, tg, tb), dt, dur)
+        else:
+            self._eased_rgb = (float(tr), float(tg), float(tb))
+        self._eased_at = now
+        r, g, b = (int(round(c)) for c in self._eased_rgb)
+        self.transitioning = smooth and _color_delta((r, g, b), (tr, tg, tb)) >= 2
+
         status["color"] = [r, g, b]
+        status["target_color"] = [tr, tg, tb]
+        status["phase"] = phase or theme.compute_day_phase(eff["sunrise"], eff["sunset"], now)
         status["brightness"] = round(brightness, 3)
-        tint = cfg.get("weather_tint_strength", 40) / 100.0
+        # Sky-body position: sun by day, moon by night (both arc east -> west).
+        sun = theme.celestial_fraction(phase, eff["sunrise"], eff["sunset"], now)
+        tint = 1.0 if hc else cfg.get("weather_tint_strength", 40) / 100.0
 
         # --- theme: apply only when the visible signature changes ------
         if config.feature_enabled(cfg, "dynamic_theme"):
@@ -312,17 +407,15 @@ class Engine:
             shift = (cfg.get("wallpaper_shift_strength", 35) / 100.0) if dynamic else 0.0
             patterns = bool(cfg.get("wallpaper_patterns", True))
             warmth = bool(cfg.get("wallpaper_warmth", True))
-            # Show a night sky whenever it's dark out, unless it's actively
-            # raining/storming (those stay themselves even after sunset).
-            pat_cond = ("night" if is_night and not any(k in condition for k in ("rain", "storm"))
-                        else condition)
+            pat_cond = _pattern_condition(condition, is_night)
             # Cache what a frame needs so the animation loop can redraw cheaply
             # (varying only the phase) without recomputing weather/theme.
             self._last_render = {
                 "r": r, "g": g, "b": b, "brightness": brightness, "tint": tint,
                 "shift": shift, "condition": pat_cond,
                 "temperature": eff.get("temperature"),
-                "patterns": patterns, "warmth": warmth,
+                "patterns": patterns, "warmth": warmth, "sun": sun,
+                "multi": bool(cfg.get("multi_monitor", True)),
             }
             backend = (cfg.get("wallpaper_backend") or "png").lower()
             if backend == "web":
@@ -360,24 +453,50 @@ class Engine:
                     if wallpaper.apply_weather_wallpaper(
                             r, g, b, brightness, tint, phase=phase, shift_strength=shift,
                             condition=pat_cond, temperature=eff.get("temperature"),
-                            patterns=patterns, warmth=warmth):
+                            patterns=patterns, warmth=warmth, sun=sun,
+                            multi=bool(cfg.get("multi_monitor", True))):
                         self._last_wall_key = (target, bucket)
                         self._last_wall_at = now
                         status["applied"].append("wallpaper")
 
-        # --- sound: (re)start only when the chosen file changes --------
+        # --- sound: loop continuously, or play a random clip now and then --
         if config.feature_enabled(cfg, "ambient_sound"):
-            path = sound.select_ambient(condition, is_night)
-            if path != self._last_sound or not self._sound_on:
-                sound.play_ambient(condition, is_night, cfg.get("sound_volume", 25))
-                self._last_sound = path
-                self._sound_on = True
-                status["applied"].append(f"sound: {path}")
-            else:
-                sound.set_volume(cfg.get("sound_volume", 25))
+            base = sound.ambient_base(condition, is_night)
+            vol = cfg.get("sound_volume", 25)
+            mode = (cfg.get("sound_mode") or "loop").lower()
+            base_changed = base != self._sound_base
+
+            if mode == "random":
+                # No continuous loop — stop any looping ambience first.
+                if self._sound_on:
+                    sound.stop_sound()
+                    self._sound_on = False
+                due = self._next_sound_at is None or now >= self._next_sound_at
+                if due or base_changed:
+                    path = sound.pick_variant(condition, is_night)
+                    sound.play_ambient(condition, is_night, vol, path=path, loop=False)
+                    self._sound_base = base
+                    self._last_sound = path
+                    iv = max(1, int(cfg.get("sound_interval_minutes", 5)))
+                    # Jitter the gap (±30%) so it never feels metronomic.
+                    gap = iv * 60 * (0.7 + 0.6 * random.random())
+                    self._next_sound_at = now + datetime.timedelta(seconds=gap)
+                    status["applied"].append(f"sound(once): {os.path.basename(path)}")
+            else:  # loop
+                self._next_sound_at = None
+                if base_changed or not self._sound_on:
+                    path = sound.pick_variant(condition, is_night)
+                    sound.play_ambient(condition, is_night, vol, path=path, loop=True)
+                    self._sound_base = base
+                    self._sound_on = True
+                    self._last_sound = path
+                    status["applied"].append(f"sound: {os.path.basename(path)}")
+                else:
+                    sound.set_volume(vol)
         elif self._sound_on:
             sound.stop_sound()
             self._sound_on = False
+            self._sound_base = None
 
         # --- tasks ------------------------------------------------------
         if config.feature_enabled(cfg, "tasks") and store is not None:
@@ -429,10 +548,14 @@ class EngineThread(threading.Thread):
             now = datetime.datetime.now()
             mono = time.monotonic()
             tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
-            animated = animation_active(cfg)
+            # Profile overlay decides whether the in-app animation loop runs.
+            animated = animation_active(profiles.overlay_config(
+                cfg, cfg.get("active_profile")))
 
-            # Full weather/theme/sound/tasks evaluation on the normal cadence.
-            if self._last_full is None or (mono - self._last_full) >= tick_iv:
+            # Step often while a colour cross-fade is in progress so the
+            # transition is smooth; otherwise on the normal cadence.
+            full_iv = 0.5 if self.engine.transitioning else tick_iv
+            if self._last_full is None or (mono - self._last_full) >= full_iv:
                 try:
                     self.last_status = self.engine.step(cfg, store, now,
                                                         animating=animated)
@@ -448,7 +571,10 @@ class EngineThread(threading.Thread):
                 self._anim_paused = False
                 sleep = tick_iv
 
-            self._wake.wait(timeout=max(0.05, min(sleep, tick_iv)))
+            sleep = min(sleep, tick_iv)
+            if self.engine.transitioning:
+                sleep = min(sleep, 0.5)      # keep the cross-fade moving
+            self._wake.wait(timeout=max(0.05, sleep))
             self._wake.clear()
         sound.stop_sound()
 
@@ -496,9 +622,11 @@ def run_forever(config_path=config.CONFIG_FILE, tasks_path=tasks_mod.TASKS_FILE)
             store = tasks_mod.TaskStore(tasks_path)
             mono = time.monotonic()
             tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
-            animated = animation_active(cfg)
+            animated = animation_active(profiles.overlay_config(
+                cfg, cfg.get("active_profile")))
 
-            if last_full is None or (mono - last_full) >= tick_iv:
+            full_iv = 0.5 if eng.transitioning else tick_iv
+            if last_full is None or (mono - last_full) >= full_iv:
                 try:
                     eng.step(cfg, store, animating=animated)
                 except Exception as e:
@@ -532,6 +660,8 @@ def run_forever(config_path=config.CONFIG_FILE, tasks_path=tasks_mod.TASKS_FILE)
                 paused = False
                 sleep = tick_iv
 
+            if eng.transitioning:
+                sleep = min(sleep, 0.5)
             time.sleep(max(0.05, sleep))
     except KeyboardInterrupt:
         sound.stop_sound()

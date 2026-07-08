@@ -1,59 +1,75 @@
 # Environment Theme Controller
 
-A cross-platform (macOS + Windows) desktop app that makes your computer
-reflect the weather and time of day outside.
+A cross-platform (macOS + Windows) desktop app that makes your computer reflect
+the weather and time of day outside — accent colour, desktop wallpaper, and
+subtle ambient sound — plus a built-in Pomodoro timer and task scheduler.
 
-## Features
+It is dependency-light (weather + audio are optional; wallpaper images are
+generated with the Python standard library, no Pillow) and stays cheap by only
+doing work when something actually changes.
 
-- **Dynamic theme** — sets the OS accent colour from the current weather.
-  - Windows: taskbar accent via the registry.
-  - macOS: Dark/Light appearance by time of day + nearest named accent colour.
-- **Weather wallpaper** — generates a sky-gradient desktop background that
-  matches the weather and brightness (pure standard library, no Pillow).
-- **Weather patterns** — a distinct, gently-moving overlay per condition:
-  trickling rain streaks, slanted rain + lightning in storms, a drifting warm
-  sun on clear days, warm cream puffs when cloudy, a moon + twinkling stars at
-  night. Elements are drawn sparsely (cost scales with element count, not pixel
-  count) and animate via the redraw cadence, so CPU stays negligible. Toggle it
-  off to fall back to a plain gradient.
-- **Cold-weather warmth** — when it's cold outside the whole palette is nudged
-  toward a cosy amber (stronger the colder it gets) so the desktop feels warm,
-  and the cloudy sky is a soft warm lilac-grey rather than a bleak flat grey.
-- **Animated wallpaper (opt-in)** — a toggle that continuously redraws the
-  wallpaper for smooth pattern motion (rain trickling, clouds drifting, stars
-  twinkling) at a configurable frame rate. It deliberately uses more CPU, so a
-  **load governor** watches frame cost + system load: it throttles the frame
-  rate as the machine gets busy and fully **pauses** animation (dropping back
-  to a static frame) when it's struggling, then resumes automatically once the
-  load clears. Off by default. For genuinely smooth GPU animation, drive an
-  external engine (ScreenPlay / Lively / Plash) from this app's weather state —
-  the in-app path favours safety and low overhead over cinematic smoothness.
-- **Dynamic background** — a slow, subtle hue/brightness drift so the desktop
-  feels alive without being distracting (toggle + strength slider).
-- **Ambient sound** — subtle weather/time soundscapes (rain, wind, birds,
-  crickets, thunder). Bundled placeholder loops are synthesised on first run.
-- **Productivity timer** — a Pomodoro timer (work / break / long break) with
-  configurable durations and a chime + notification on each transition.
-- **Tasks & schedules** — daily or one-off tasks that can notify you, play a
-  chime, or switch the weather/theme override.
-- **Manual overrides** — force a weather condition, time of day, or exact
-  theme colour by hand.
-- **Enable/disable everything** — a master switch plus per-feature toggles.
-- **Run at login** — optional auto-start (macOS LaunchAgent / Windows Run key).
-- **Light on resources** — the engine steps cheaply on a short cadence but only
-  refetches weather and re-applies theme/wallpaper/sound *when something
-  actually changes*; wallpaper redraws are rate-limited.
+---
 
-## Install
+## Quick start
 
 ```bash
-pip install -r requirements.txt
-# If the GUI won't open ("No module named '_tkinter'"):
-#   macOS:    brew install python-tk@3.13     # match your python version
-#   Ubuntu:   sudo apt install python3-tk
+cd EnterpriseTerm3Project
+pip install -r requirements.txt      # optional deps: requests (weather), pygame (sound)
+python main.py                       # launch the GUI
 ```
 
-## Run
+Then, in the window: pick your settings and press **▶ Start**. That applies the
+theme/wallpaper/sound right away and keeps them updating in the background.
+Press **■ Stop** to halt.
+
+> **GUI won't open?** `tkinter` ships with Python but isn't a pip package.
+> - macOS (Homebrew): `brew install python-tk` (match your Python version)
+> - Debian/Ubuntu: `sudo apt install python3-tk`
+> - Windows: included with the python.org installer
+
+See the full walkthrough in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
+
+---
+
+## What it does
+
+| Feature | Summary |
+|---|---|
+| **Dynamic theme** | OS accent colour follows the weather. Windows: taskbar accent. macOS: Dark/Light by time of day + nearest named accent. |
+| **Time-of-day light** | Theme + wallpaper move through the day's light — sunrise, morning, midday, afternoon, sunset, dusk, night — warm and low at the edges, bright and neutral at noon, deep blue at night. |
+| **Gradual transitions** | Time-of-day colour changes continuously and weather changes cross-fade over a few seconds — no sudden jumps. |
+| **Seasons** | A seasonal wash nudges the palette (fresh-green spring → golden summer → amber autumn → cool-blue winter); hemisphere auto-detected from your latitude. |
+| **Mood profiles** | Switchable **Focus / Creativity / Relax** profiles reshape the colours, motion and sound; toggle off with "None". |
+| **Multi-monitor** | Sets the wallpaper on every connected display (toggleable). |
+| **Accessibility** | A **high-contrast** mode forces bold, maximum-contrast colours and a black/white/yellow window. |
+| **Weather wallpaper** | A sky-gradient background per condition, with moving patterns (rain, sun, clouds, stars) and a cosy warm tint when it's cold. |
+| **Animated wallpaper** | One **Off / Smooth / Ultra** choice — *Smooth* animates with zero setup; *Ultra* uses a free external app for GPU-smooth motion. |
+| **Ambient sound** | Weather/time soundscapes with your own files + random variants; play looped or occasionally. |
+| **Pomodoro timer** | Work / break / long-break cycles with chime + notification. |
+| **Tasks & schedules** | Daily or one-off tasks that notify, chime, or switch the weather/theme. |
+| **Live weather panel** | Temperature, feels-like, humidity, UV index (with risk band), wind + gusts, rain chance and pressure. |
+| **Manual overrides** | Force a weather condition, time of day, or exact accent colour — the live data keeps showing the *real* outside conditions. |
+| **Time-of-day UI** | The app window itself follows the day: a light theme by day, dark at night, with a phase-tinted accent — matching the wallpaper/OS. |
+| **Run at login** | Optional auto-start (macOS LaunchAgent / Windows Run key). |
+
+---
+
+## Documentation
+
+Detailed, task-focused guides live in **[`docs/`](docs/)**:
+
+| Guide | What's inside |
+|---|---|
+| [User guide](docs/USER_GUIDE.md) | First launch, the Dashboard & Appearance tabs, the Focus & Tasks window, Start/Stop, running at login. |
+| [Wallpaper guide](docs/WALLPAPER.md) | Motion (Off/Smooth/Ultra), weather patterns, cold warmth, and step-by-step external-app setup (ScreenPlay / Lively / Plash). |
+| [Sound guide](docs/SOUNDS.md) | File names, adding your own clips, variants, loop vs. random playback. |
+| [Tasks & timer guide](docs/TASKS_AND_TIMER.md) | Pomodoro usage and creating daily / one-off scheduled tasks. |
+| [Configuration reference](docs/CONFIGURATION.md) | Every `config.json` key, defaults, and where files are stored. |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | GUI, audio, wallpaper, accent-colour, weather, and animation issues. |
+
+---
+
+## Running modes
 
 ```bash
 python main.py              # settings GUI (default)
@@ -62,30 +78,32 @@ python main.py --background # headless loop (what "run at login" launches)
 python tests.py             # run the test suite
 ```
 
-In the GUI: change settings, then press **Apply Now** (one cycle) or **Start**
-(continuous engine). **Save** only persists to disk. On macOS the accent colour
-only changes in apps launched *after* it is set; Dark/Light and the wallpaper
-update immediately.
+---
 
-## Layout
+## Project layout
 
-| File           | Responsibility                                          |
-|----------------|---------------------------------------------------------|
-| `main.py`      | Entry point (GUI / `--once` / `--background`)           |
-| `gui.py`       | Tkinter settings window (General / Override / Tasks / Timer) |
-| `engine.py`    | Stateful orchestration: cheap steps, work only on change |
-| `config.py`    | Defaults, load/save, feature gating                     |
-| `weather.py`   | Live weather + manual override + offline fallback       |
-| `theme.py`     | Compute colour + apply accent (Windows / macOS)         |
-| `wallpaper.py` | Generate + set the (drifting) weather wallpaper         |
-| `perf.py`      | Load governor that throttles/pauses animated wallpaper  |
-| `sound.py`     | Ambient sound selection, playback, placeholder synth    |
-| `pomodoro.py`  | Productivity timer state machine                        |
-| `tasks.py`     | Tasks & schedules store                                 |
-| `activity.py`  | Idle-time detection                                     |
-| `autostart.py` | Run-at-login (LaunchAgent / Run key)                    |
+| File | Responsibility |
+|---|---|
+| `main.py` | Entry point (GUI / `--once` / `--background`) |
+| `gui.py` | Tkinter UI: Dashboard + Appearance tabs, separate Focus & Tasks window |
+| `engine.py` | Stateful orchestration: cheap steps, work only on change |
+| `config.py` | Defaults, load/save, feature gating, friendly-motion mapping |
+| `weather.py` | Live weather (Open-Meteo) + manual override + offline fallback |
+| `theme.py` | Compute colour + apply accent (Windows / macOS) |
+| `wallpaper.py` | Generate + set the weather wallpaper (patterns, warmth, drift) |
+| `webwall.py` | "Ultra" web wallpaper: HTML/canvas page + live `weather.json` feed |
+| `perf.py` | Load governor that throttles/pauses the Smooth animation |
+| `profiles.py` | Focus / Creativity / Relax mood profiles (colour + settings overlay) |
+| `sound.py` | Ambient sound selection, variants, playback, placeholder synth |
+| `pomodoro.py` | Productivity timer state machine |
+| `tasks.py` | Tasks & schedules store |
+| `activity.py` | Idle-time detection |
+| `autostart.py` | Run-at-login (LaunchAgent / Run key) |
 
-Settings are stored in `config.json`; tasks in `tasks.json`.
+Settings are stored in `config.json`; tasks in `tasks.json`; generated
+wallpaper assets in `~/.environment_theme_controller/`.
+
+---
 
 ## Testing
 
@@ -93,7 +111,12 @@ Settings are stored in `config.json`; tasks in `tasks.json`.
 python tests.py
 ```
 
-A headless suite (114 checks) covering config, weather override, theme,
-wallpaper PNG + dynamic drift + weather patterns/warmth, the animation load
-governor + animated-wallpaper wiring, sound, tasks, autostart, the Pomodoro
-timer, and the engine's change-guards (all system mutations are stubbed).
+A headless suite (**238 checks**) covering config + friendly-motion mapping,
+mood profiles, seasons, gradual transitions + easing, high-contrast,
+weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
+/ warmth, the
+animation load governor and animated-wallpaper wiring, the web backend, sound
+selection / variants / modes, tasks, autostart, the Pomodoro timer, the GUI
+value mapping, and the engine's change-guards. All system-mutating calls
+(accent, wallpaper, audio, launchctl/registry) are stubbed, so running the
+tests never changes your machine.

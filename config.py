@@ -24,8 +24,8 @@ DEFAULTS = {
         "tasks":         True,    # run user tasks & schedules
     },
 
-    # Theme.
-    "weather_tint_strength": 40,  # percent 0-100 (reserved for blending)
+    # Theme. Higher = more vivid weather colour (lower blends toward neutral).
+    "weather_tint_strength": 72,  # percent 0-100
 
     # Wallpaper — subtle, continuous colour drift so the desktop feels alive.
     "wallpaper_dynamic": True,            # enable the slow colour shift
@@ -48,14 +48,39 @@ DEFAULTS = {
 
     # Sound.
     "sound_volume": 25,           # percent 0-100 — "subtle" by default
+    # Playback style: "loop" plays the ambience continuously; "random" plays a
+    # single (randomly chosen) clip now and then, roughly every N minutes.
+    "sound_mode": "loop",         # loop | random
+    "sound_interval_minutes": 5,  # random mode: average gap between plays
 
     # Location used for live weather (Open-Meteo).
     "location": {"lat": -33.8688, "lon": 151.2093, "name": "Sydney"},
 
     # Manual overrides. "auto" / None means "use live data".
     "manual_weather": "auto",     # auto|clear|cloud|rain|storm|night
-    "manual_time":    "auto",     # auto|day|night
+    "manual_time":    "auto",     # auto | sunrise|morning|midday|afternoon|sunset|dusk|night
     "manual_theme_color": None,   # null or [r, g, b]
+
+    # Gradual transitions: time-of-day colour changes continuously, and weather
+    # changes cross-fade over this many seconds instead of snapping.
+    "smooth_transitions": True,
+    "theme_transition_seconds": 8,
+
+    # Seasons nudge the palette (fresh green spring, golden summer, amber
+    # autumn, cool-blue winter). Hemisphere flips the calendar; "auto" derives
+    # it from the location latitude.
+    "seasonal_themes": True,
+    "hemisphere": "auto",         # auto|north|south
+
+    # Mood profiles overlay the theme + feel. "none" = off.
+    "active_profile": "none",     # none|focus|creativity|relax
+
+    # Accessibility. "high_contrast" forces bold, maximum-contrast colours and
+    # a high-contrast GUI regardless of the time of day.
+    "accessibility_mode": "none", # none|high_contrast
+
+    # Set the wallpaper on every connected monitor (not just the primary).
+    "multi_monitor": True,
 
     # Start automatically when the user logs in.
     "run_at_login": False,
@@ -76,9 +101,41 @@ DEFAULTS = {
 
 # Allowed values for the override dropdowns — shared with the GUI.
 WEATHER_CHOICES = ["auto", "clear", "cloud", "rain", "storm", "night"]
-TIME_CHOICES = ["auto", "day", "night"]
+TIME_CHOICES = ["auto", "sunrise", "morning", "midday", "afternoon", "sunset", "dusk", "night"]
 FEATURE_KEYS = ["dynamic_theme", "wallpaper", "ambient_sound", "tasks"]
 WALLPAPER_BACKENDS = ["png", "web"]
+SOUND_MODES = ["loop", "random"]
+PROFILE_CHOICES = ["none", "focus", "creativity", "relax"]
+ACCESSIBILITY_CHOICES = ["none", "high_contrast"]
+HEMISPHERE_CHOICES = ["auto", "north", "south"]
+
+# A single, friendly wallpaper-motion choice that hides the backend/animated
+# plumbing from the user:
+#   off    -> still image (png backend, not animated)
+#   smooth -> built-in animation, zero setup (png backend, animated)
+#   ultra  -> smoothest, needs an external wallpaper app (web backend)
+WALLPAPER_MOTIONS = ["off", "smooth", "ultra"]
+
+
+def motion_from_config(cfg: dict) -> str:
+    """Derive the friendly motion choice from the raw backend/animated flags."""
+    if (cfg.get("wallpaper_backend") or "png").lower() == "web":
+        return "ultra"
+    return "smooth" if cfg.get("wallpaper_animated") else "off"
+
+
+def apply_motion(cfg: dict, motion: str) -> dict:
+    """Set the backend/animated flags from a friendly motion choice."""
+    m = (motion or "off").lower()
+    if m == "ultra":
+        cfg["wallpaper_backend"] = "web"
+    elif m == "smooth":
+        cfg["wallpaper_backend"] = "png"
+        cfg["wallpaper_animated"] = True
+    else:
+        cfg["wallpaper_backend"] = "png"
+        cfg["wallpaper_animated"] = False
+    return cfg
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

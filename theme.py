@@ -1,5 +1,6 @@
 import sys
 import struct
+import colorsys
 from datetime import datetime
 
 
@@ -47,7 +48,7 @@ def brightness_factor(sunrise, sunset):
 
 CONDITION_COLORS = {
     "clear": ( 80, 160, 255),   # clear-sky blue
-    "cloud": (165, 152, 170),   # soft warm lilac-grey (not a bleak flat grey)
+    "cloud": (135, 178, 222),   # bright soft-blue overcast (cheerful, not grey)
     "rain":  ( 40,  80, 180),   # stormy blue
     "storm": ( 80,  20, 160),   # deep purple
     "night": ( 20,  30,  80),   # midnight navy
@@ -246,22 +247,272 @@ def set_macos_theme(r, g, b, brightness):
 NIGHT_BRIGHTNESS = 0.15
 
 
-def compute_theme_color(condition, sunrise, sunset, is_night_override=None):
+# ---------------------------------------------------------
+# TIME-OF-DAY PHASES
+# ---------------------------------------------------------
+#
+# Beyond a plain day/night split, the theme moves through the day's light:
+# warm and low at sunrise, neutral and bright at midday, warm again at sunset,
+# cooling into a purple dusk and a deep-blue night. Each phase carries a
+# representative brightness plus a "sky light" colour blended into the weather
+# colour, so the background reflects the time of day, not just the weather.
+
+TIME_PHASES = ["night", "sunrise", "morning", "midday", "afternoon", "sunset", "dusk"]
+
+# phase -> (brightness, sky-light colour RGB, strength 0..1)
+# Strong, saturated tints so the result reads as a real colour (orange dawn/
+# dusk, blue noon, purple twilight, navy night) rather than a muddy grey. The
+# tint is kept vivid enough that the nearest macOS named accent lands on the
+# expected colour (e.g. sunset -> Orange).
+_PHASE_LIGHT = {
+    "night":     (0.15, ( 15,  20,  70), 0.80),
+    "sunrise":   (0.75, (255, 150,  40), 0.80),
+    "morning":   (0.90, (255, 235, 180), 0.05),
+    "midday":    (1.00, (255, 255, 255), 0.05),
+    "afternoon": (0.95, (255, 215, 150), 0.06),
+    "sunset":    (0.80, (255, 110,  30), 0.85),
+    "dusk":      (0.40, (110,  60, 170), 0.70),
+}
+
+# Where the sun sits for a manual phase (0 = sunrise/east, 1 = sunset/west);
+# None means no sun (dusk/night).
+_PHASE_SUN = {"sunrise": 0.06, "morning": 0.28, "midday": 0.5,
+              "afternoon": 0.72, "sunset": 0.94}
+
+
+def phase_sun_fraction(phase):
+    """Sun position 0..1 (east->west) for a phase, or None if the sun is down."""
+    return _PHASE_SUN.get(phase)
+
+
+def day_fraction(sunrise, sunset, now=None):
+    """
+    How far through daylight *now* is: 0 at sunrise (east), 1 at sunset (west).
+    None before sunrise / after sunset (sun below the horizon).
+    """
+    now_s = _secs_of_day(now or datetime.now())
+    rise = _secs_of_day(sunrise)
+    set_ = _secs_of_day(sunset)
+    if set_ <= rise or now_s <= rise or now_s >= set_:
+        return None
+    return (now_s - rise) / (set_ - rise)
+
+
+def night_fraction(sunrise, sunset, now=None):
+    """
+    How far through the night *now* is: 0 at sunset (moon rises in the east),
+    1 at the next sunrise (moon sets in the west). None during daylight.
+    """
+    now_s = _secs_of_day(now or datetime.now())
+    rise = _secs_of_day(sunrise)
+    set_ = _secs_of_day(sunset)
+    DAY = 24 * 3600
+    if rise <= now_s <= set_:            # daytime — no moon
+        return None
+    night_len = (DAY - set_) + rise
+    if night_len <= 0:
+        return 0.5
+    elapsed = (now_s - set_) if now_s > set_ else (DAY - set_) + now_s
+    return max(0.0, min(1.0, elapsed / night_len))
+
+
+def celestial_fraction(phase, sunrise, sunset, now=None):
+    """
+    Sky-body position 0..1 (east->west) for the wallpaper: the sun's arc by day
+    and the moon's arc by night. Falls back to mid-sky when time is ambiguous.
+    """
+    frac = phase_sun_fraction(phase) if phase else day_fraction(sunrise, sunset, now)
+    if frac is None:
+        frac = night_fraction(sunrise, sunset, now)
+    return 0.5 if frac is None else frac
+
+
+def _to_dt(x):
+    return datetime.fromisoformat(x) if isinstance(x, str) else x
+
+
+def _secs_of_day(x):
+    dt = _to_dt(x)
+    t = dt.time() if hasattr(dt, "time") else dt
+    return t.hour * 3600 + t.minute * 60 + t.second
+
+
+def _mix(c1, c2, t):
+    return tuple(max(0, min(255, int(round(c1[i] + (c2[i] - c1[i]) * t))))
+                 for i in range(3))
+
+
+def phase_light(phase):
+    """(brightness, tint_rgb, strength) for *phase*; neutral for unknown."""
+    return _PHASE_LIGHT.get(phase, (1.0, (255, 255, 255), 0.0))
+
+
+def apply_phase_tint(rgb, phase):
+    """Blend the weather colour toward the phase's sky-light colour."""
+    _b, tint, strength = phase_light(phase)
+    return _mix(rgb, tint, strength)
+
+
+def normalize_phase(name):
+    """Map a manual choice to a known phase (``day`` -> ``midday``), or None."""
+    n = (name or "").lower()
+    if n == "day":
+        return "midday"
+    return n if n in TIME_PHASES else None
+
+
+def phase_is_night(phase):
+    """True for phases treated as night (dark mode + night ambience/wallpaper)."""
+    return phase == "night"
+
+
+def compute_day_phase(sunrise, sunset, now=None):
+    """Which time-of-day phase *now* falls in, relative to sunrise/sunset."""
+    now_s = _secs_of_day(now or datetime.now())
+    rise = _secs_of_day(sunrise)
+    set_ = _secs_of_day(sunset)
+    noon = (rise + set_) / 2
+    H = 3600
+    if now_s < rise - 0.5 * H or now_s >= set_ + 1.5 * H:
+        return "night"
+    if now_s < rise + 0.5 * H:
+        return "sunrise"
+    if now_s < noon - 1.5 * H:
+        return "morning"
+    if now_s < noon + 1.5 * H:
+        return "midday"
+    if now_s < set_ - 0.5 * H:
+        return "afternoon"
+    if now_s < set_ + 0.5 * H:
+        return "sunset"
+    return "dusk"
+
+
+# ---------------------------------------------------------
+# SEASONS
+# ---------------------------------------------------------
+# A gentle seasonal wash over the palette.
+SEASON_LIGHT = {
+    "spring": ((120, 225, 150), 0.08),   # fresh green
+    "summer": ((255, 225, 120), 0.08),   # golden
+    "autumn": ((235, 140,  55), 0.12),   # amber
+    "winter": ((150, 195, 240), 0.10),   # cool blue
+}
+
+_NORTH_SEASON = {12: "winter", 1: "winter", 2: "winter", 3: "spring",
+                 4: "spring", 5: "spring", 6: "summer", 7: "summer",
+                 8: "summer", 9: "autumn", 10: "autumn", 11: "autumn"}
+_OPPOSITE = {"winter": "summer", "summer": "winter",
+             "spring": "autumn", "autumn": "spring"}
+
+
+def hemisphere_for(lat, setting="auto"):
+    s = (setting or "auto").lower()
+    if s in ("north", "south"):
+        return s
+    return "south" if (lat is not None and lat < 0) else "north"
+
+
+def season_for(date, hemisphere="north"):
+    """Meteorological season for *date* in the given hemisphere."""
+    s = _NORTH_SEASON[date.month]
+    return _OPPOSITE[s] if (hemisphere or "north").lower() == "south" else s
+
+
+def _apply_season(rgb, season):
+    sl = SEASON_LIGHT.get(season)
+    return _mix(rgb, sl[0], sl[1]) if sl else rgb
+
+
+# ---------------------------------------------------------
+# CONTINUOUS SKY LIGHT  (gradual time-of-day transitions)
+# ---------------------------------------------------------
+
+def sky_light(sunrise, sunset, now=None):
+    """
+    Interpolate (brightness, tint, strength) smoothly across the day between
+    the phase keyframes, so the theme glides between times instead of snapping.
+    """
+    now_s = _secs_of_day(now or datetime.now())
+    rise = _secs_of_day(sunrise)
+    set_ = _secs_of_day(sunset)
+    if set_ <= rise:
+        return phase_light("midday")
+    noon = (rise + set_) / 2.0
+    H, DAY = 3600.0, 86400.0
+    raw = [
+        (0.0, "night"), (rise - 0.75 * H, "night"), (rise + 0.25 * H, "sunrise"),
+        (rise + 0.25 * H + 0.35 * (noon - rise), "morning"), (noon, "midday"),
+        (noon + 0.6 * (set_ - noon), "afternoon"), (set_, "sunset"),
+        (set_ + 0.75 * H, "dusk"), (set_ + 1.5 * H, "night"), (DAY, "night"),
+    ]
+    anchors = []
+    for tsec, ph in raw:
+        tsec = max(0.0, min(DAY, tsec))
+        if anchors and tsec <= anchors[-1][0]:
+            continue
+        anchors.append((tsec, ph))
+    prev, nxt = anchors[0], anchors[-1]
+    for i in range(len(anchors) - 1):
+        if anchors[i][0] <= now_s <= anchors[i + 1][0]:
+            prev, nxt = anchors[i], anchors[i + 1]
+            break
+    span = nxt[0] - prev[0]
+    t = 0.0 if span <= 0 else (now_s - prev[0]) / span
+    pb, pt, ps = phase_light(prev[1])
+    nb, nt, ns = phase_light(nxt[1])
+    return (pb + (nb - pb) * t,
+            tuple(pt[i] + (nt[i] - pt[i]) * t for i in range(3)),
+            ps + (ns - ps) * t)
+
+
+# ---------------------------------------------------------
+# ACCESSIBILITY
+# ---------------------------------------------------------
+
+def high_contrast(rgb):
+    """Push a colour to a bold, maximally-saturated version (keeps the hue)."""
+    r, g, b = (c / 255.0 for c in rgb)
+    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    if s < 0.15:                       # near-grey -> strong yellow / black
+        return (255, 255, 0) if v > 0.5 else (10, 10, 10)
+    r, g, b = colorsys.hsv_to_rgb(h, 1.0, 1.0)
+    return (int(r * 255), int(g * 255), int(b * 255))
+
+
+def compute_theme_color(condition, sunrise, sunset, is_night_override=None,
+                        phase=None, now=None, season=None):
     """
     Return ((r, g, b), brightness) for the given weather + time of day.
 
-    *is_night_override*: pass True/False to force night/day brightness
-    (used by the manual time-of-day override); None = compute from the
-    sun times.
+    The colour is the weather base tinted by the time-of-day *phase*.
+
+    *phase*: force a specific phase (``"sunrise"``, ``"midday"``, …) and use its
+    representative brightness + light. None = derive the phase from the sun
+    times (for the tint) and take brightness from the smooth day/night curve.
+    *is_night_override*: when *phase* is None, force night/day brightness
+    (manual day/night); None = automatic.
+    *season*: optional season name for a gentle palette wash.
+
+    When *phase* is None the tint/brightness come from the *continuous*
+    ``sky_light`` curve, so the theme glides smoothly between times of day.
     """
     base = weather_base_color(condition)
-    if is_night_override is True:
-        bright = NIGHT_BRIGHTNESS
+
+    if phase is not None:                       # manual phase -> discrete light
+        bright, tint, strength = phase_light(phase)
+    elif is_night_override is True:
+        bright, tint, strength = phase_light("night")
     elif is_night_override is False:
-        bright = 1.0
-    else:
-        bright = brightness_factor(sunrise, sunset)
-    return scale(base, bright), bright
+        bright, tint, strength = phase_light("midday")
+    else:                                       # auto -> smooth, continuous
+        bright, tint, strength = sky_light(sunrise, sunset, now)
+
+    col = _mix(base, tint, strength)
+    col = _apply_season(col, season)
+    # Keep the hue vivid; darken only gently (heavy scaling greys the accent).
+    final = _mix(col, (0, 0, 0), (1.0 - bright) * 0.45)
+    return final, bright
 
 
 def theme_signature(r, g, b, brightness):

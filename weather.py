@@ -33,8 +33,10 @@ def get_weather(lat: float = LAT, lon: float = LON) -> dict:
     url = (
         "https://api.open-meteo.com/v1/forecast?"
         f"latitude={lat}&longitude={lon}"
-        "&current=temperature_2m,is_day,rain,precipitation,showers,wind_speed_10m,cloud_cover,weathercode"
-        "&daily=sunrise,sunset"
+        "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
+        "is_day,rain,precipitation,showers,wind_speed_10m,wind_gusts_10m,"
+        "wind_direction_10m,cloud_cover,pressure_msl,uv_index,weathercode"
+        "&daily=sunrise,sunset,uv_index_max,precipitation_probability_max"
         "&timezone=auto"
     )
 
@@ -74,15 +76,31 @@ def get_weather(lat: float = LAT, lon: float = LON) -> dict:
         condition = "night"
 
     return {
-        "condition":   condition,
-        "sunrise":     sunrise,
-        "sunset":      sunset,
-        "is_day":      bool(is_day),
-        "temperature": current.get("temperature_2m"),
-        "rain":        rain_amount,
-        "wind_speed":  wind_speed,
-        "cloud_cover": cloud_cover,
+        "condition":     condition,
+        "sunrise":       sunrise,
+        "sunset":        sunset,
+        "is_day":        bool(is_day),
+        "temperature":   current.get("temperature_2m"),
+        "feels_like":    current.get("apparent_temperature"),
+        "humidity":      current.get("relative_humidity_2m"),
+        "uv_index":      current.get("uv_index"),
+        "uv_index_max":  (daily.get("uv_index_max") or [None])[0],
+        "pressure":      current.get("pressure_msl"),
+        "rain":          rain_amount,
+        "precip_chance": (daily.get("precipitation_probability_max") or [None])[0],
+        "wind_speed":    wind_speed,
+        "wind_gust":     current.get("wind_gusts_10m"),
+        "wind_dir":      current.get("wind_direction_10m"),
+        "cloud_cover":   cloud_cover,
     }
+
+
+# Measurement keys carried straight from live data (never faked by overrides).
+MEASUREMENT_KEYS = (
+    "temperature", "feels_like", "humidity", "uv_index", "uv_index_max",
+    "pressure", "rain", "precip_chance", "wind_speed", "wind_gust",
+    "wind_dir", "cloud_cover",
+)
 
 
 def _is_night(sunrise, sunset, now=None) -> bool:
@@ -90,57 +108,63 @@ def _is_night(sunrise, sunset, now=None) -> bool:
     return not (sunrise <= now <= sunset)
 
 
-def get_effective_weather(cfg: dict) -> dict:
+def get_live_weather(cfg: dict) -> dict:
     """
-    Return the weather the app should act on, honouring manual overrides
-    and falling back to a sane default when live data is unavailable.
+    The real measured weather for the configured location (temperature,
+    humidity, UV, wind, …), tagged ``source`` = "live" or "fallback". This is
+    always the true outside data — manual overrides never touch it.
+    """
+    loc = cfg.get("location", {})
+    try:
+        w = get_weather(loc.get("lat", LAT), loc.get("lon", LON))
+        w["source"] = "live"
+        return w
+    except Exception as e:
+        print(f"[weather] Live fetch failed ({e}); using fallback.")
+        sunrise, sunset = _default_sun_times()
+        w = {k: None for k in MEASUREMENT_KEYS}
+        w.update({
+            "condition": "clear",
+            "sunrise": sunrise,
+            "sunset": sunset,
+            "is_day": not _is_night(sunrise, sunset),
+            "source": "fallback",
+        })
+        return w
 
-    Adds keys: "is_night" (bool) and "source" ("manual"/"live"/"fallback").
+
+def apply_overrides(live: dict, cfg: dict, now=None) -> dict:
     """
+    Return the weather the app should *act on*: the live data with manual
+    weather/time overrides applied to the condition and day/night only. Live
+    measurements carry through unchanged, so the dashboard keeps showing real
+    UV / humidity / temperature even while a manual look is forced.
+
+    Adds keys: "is_night" (bool) and "condition_source" ("manual"/live source).
+    """
+    w = dict(live)
     manual_weather = (cfg.get("manual_weather") or "auto").lower()
     manual_time = (cfg.get("manual_time") or "auto").lower()
 
-    # --- Manual weather override ---------------------------------------
+    # Condition drives theme/wallpaper/sound — overridable; data stays live.
     if manual_weather != "auto":
-        sunrise, sunset = _default_sun_times()
-        w = {
-            "condition": manual_weather,
-            "sunrise": sunrise,
-            "sunset": sunset,
-            "is_day": manual_weather != "night",
-            "temperature": None,
-            "rain": 1 if manual_weather in ("rain", "storm") else 0,
-            "wind_speed": 40 if manual_weather == "storm" else 0,
-            "cloud_cover": 80 if manual_weather in ("cloud", "rain", "storm") else 0,
-            "source": "manual",
-        }
+        w["condition"] = manual_weather
+        w["condition_source"] = "manual"
     else:
-        # --- Live weather, with offline fallback -----------------------
-        loc = cfg.get("location", {})
-        try:
-            w = get_weather(loc.get("lat", LAT), loc.get("lon", LON))
-            w["source"] = "live"
-        except Exception as e:
-            print(f"[weather] Live fetch failed ({e}); using fallback.")
-            sunrise, sunset = _default_sun_times()
-            w = {
-                "condition": "clear",
-                "sunrise": sunrise,
-                "sunset": sunset,
-                "is_day": not _is_night(sunrise, sunset),
-                "temperature": None,
-                "rain": 0,
-                "wind_speed": 0,
-                "cloud_cover": 0,
-                "source": "fallback",
-            }
+        w["condition_source"] = live.get("source", "live")
 
-    # --- Manual day/night override -------------------------------------
+    # Day/night — "night" forces night; any daytime phase forces day.
     if manual_time == "night":
         w["is_night"] = True
-    elif manual_time == "day":
+    elif manual_time in ("day", "sunrise", "morning", "midday",
+                         "afternoon", "sunset", "dusk"):
         w["is_night"] = False
-    else:
-        w["is_night"] = _is_night(w["sunrise"], w["sunset"])
+    else:  # auto
+        w["is_night"] = _is_night(w["sunrise"], w["sunset"], now)
 
     return w
+
+
+def get_effective_weather(cfg: dict) -> dict:
+    """Fetch live weather and apply manual overrides (one-shot convenience)."""
+    return apply_overrides(get_live_weather(cfg), cfg)
