@@ -15,6 +15,16 @@ import wave
 
 SOUNDS_DIR = "sounds"
 
+# (display label, base filename) for each weather the app has ambience for.
+# The chime is separate (task/schedule feedback), not weather ambience.
+SOUND_CONDITIONS = [
+    ("Clear day",   "clearday"),
+    ("Clear night", "clearnight"),
+    ("Cloudy",      "cloud"),
+    ("Rain",        "rain"),
+    ("Storm",       "storm"),
+]
+
 # Defer pygame import so an audio init failure never crashes the app.
 _pygame_available = False
 _mixer = None
@@ -45,25 +55,86 @@ def _ensure_mixer():
 # Sound selection by weather + time of day
 # ---------------------------------------------------------
 
-def select_ambient(condition: str, is_night: bool) -> str:
-    """Map (condition, day/night) to an ambient sound filename."""
+def ambient_base(condition: str, is_night: bool) -> str:
+    """
+    Map (condition, day/night) to a base sound name. Names are generic and
+    condition-based, so dropping your own file in sounds/ is obvious:
+      storm  rain  cloud  clearday  clearnight
+    """
     cond = (condition or "").lower()
     if "storm" in cond:
-        name = "thunder"
+        name = "storm"
     elif "rain" in cond:
-        name = "rain-soft"
+        name = "rain"
     elif "cloud" in cond:
-        name = "wind"
+        name = "cloud"
     elif "clear" in cond:
-        name = "crickets" if is_night else "birds"
+        name = "clearnight" if is_night else "clearday"
     elif "night" in cond:
-        name = "crickets"
+        name = "clearnight"
     else:
-        name = "wind"
-    # Night with otherwise-daytime ambience -> soften toward wind.
-    if is_night and name == "birds":
-        name = "crickets"
-    return os.path.join(SOUNDS_DIR, f"{name}.wav")
+        name = "cloud"
+    # Daytime ambience at night -> use the night variant.
+    if is_night and name == "clearday":
+        name = "clearnight"
+    return name
+
+
+def select_ambient(condition: str, is_night: bool) -> str:
+    """Canonical file path (``base.wav``) for the weather/time — deterministic."""
+    return os.path.join(SOUNDS_DIR, f"{ambient_base(condition, is_night)}.wav")
+
+
+def list_variants(base: str, directory=SOUNDS_DIR):
+    """
+    All files that count as the *base* sound: ``base.wav`` plus any variant
+    like ``base2.wav``, ``base-forest.wav``, ``base_1.wav``. Lets users add
+    several clips per condition so the ambience doesn't get repetitive.
+    """
+    try:
+        files = os.listdir(directory)
+    except OSError:
+        return []
+    base = base.lower()
+    out = []
+    for f in files:
+        low = f.lower()
+        if not low.endswith(".wav") or not low.startswith(base):
+            continue
+        rest = low[len(base):-4]           # between the base and ".wav"
+        # Accept an exact match or a variant marked by a digit/-/_/space,
+        # so "clearday" never swallows a different base sharing its prefix.
+        if rest == "" or rest[0] in "-_ 0123456789":
+            out.append(os.path.join(directory, f))
+    return sorted(out)
+
+
+def pick_variant(condition: str, is_night: bool, directory=SOUNDS_DIR, rng=None):
+    """A randomly chosen variant path for the weather/time (falls back to base)."""
+    base = ambient_base(condition, is_night)
+    variants = list_variants(base, directory)
+    if not variants:
+        return os.path.join(directory, f"{base}.wav")
+    return (rng or random).choice(variants)
+
+
+def open_folder(directory=SOUNDS_DIR):
+    """Reveal the sounds folder in the OS file manager. Returns True on success."""
+    import sys
+    import subprocess
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.abspath(directory)
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", path], timeout=5)
+        elif sys.platform == "win32":
+            os.startfile(path)  # type: ignore[attr-defined]
+        else:
+            subprocess.run(["xdg-open", path], timeout=5)
+        return True
+    except Exception as e:
+        print(f"[sound] Could not open folder: {e}")
+        return False
 
 
 # ---------------------------------------------------------
@@ -81,8 +152,12 @@ def set_volume(volume_pct):
             pass
 
 
-def play_sound(file: str, volume_pct=None):
-    """Play a looping ambient sound, replacing any currently playing one."""
+def play_sound(file: str, volume_pct=None, loop=True):
+    """
+    Play an ambient sound, replacing any currently playing one. *loop*=True
+    repeats it continuously; *loop*=False plays it once (used by the
+    occasional/random mode).
+    """
     global current_sound, _current_path
     if not _ensure_mixer():
         return
@@ -100,11 +175,12 @@ def play_sound(file: str, volume_pct=None):
             print(f"[sound] Sound file not found, skipping: {file!r}")
             return
 
-    # Don't restart the same file if it's already playing. (pygame's Sound
-    # objects forbid custom attributes, so we track the path ourselves.)
+    # For a looping sound, don't restart the same file if it's already playing.
+    # (pygame's Sound objects forbid custom attributes, so we track the path
+    # ourselves.) One-shot plays always fire — that's the point.
     if current_sound is not None:
         try:
-            if current_sound.get_num_channels() > 0 and _current_path == file:
+            if loop and current_sound.get_num_channels() > 0 and _current_path == file:
                 return
         except Exception:
             pass
@@ -116,17 +192,22 @@ def play_sound(file: str, volume_pct=None):
     try:
         snd = _mixer.Sound(file)
         snd.set_volume(_current_volume)
-        snd.play(loops=-1)
+        snd.play(loops=-1 if loop else 0)
         current_sound = snd
         _current_path = file
-        print(f"[sound] Playing: {file} (vol={_current_volume:.2f})")
+        print(f"[sound] Playing: {file} (loop={loop}, vol={_current_volume:.2f})")
     except Exception as e:
         print(f"[sound] Failed to play {file!r}: {e}")
 
 
-def play_ambient(condition: str, is_night: bool, volume_pct=None):
-    """Pick and play the ambient sound for the given weather/time."""
-    play_sound(select_ambient(condition, is_night), volume_pct=volume_pct)
+def play_ambient(condition: str, is_night: bool, volume_pct=None,
+                 path=None, loop=True):
+    """
+    Play the ambient sound for the given weather/time. *path* lets the caller
+    supply an already-chosen variant; otherwise the canonical file is used.
+    """
+    play_sound(path or select_ambient(condition, is_night),
+               volume_pct=volume_pct, loop=loop)
 
 
 def play_chime():
@@ -193,15 +274,15 @@ def _noise(n, lp=0.0):
 
 def _synth(name, seconds=2.0):
     n = int(_RATE * seconds)
-    if name == "rain-soft":
+    if name == "rain":
         return [s * 0.5 for s in _noise(n, lp=0.6)]
-    if name == "wind":
+    if name == "cloud":
         base = _noise(n, lp=0.92)
         return [base[i] * (0.35 + 0.25 * math.sin(2 * math.pi * i / n)) for i in range(n)]
-    if name == "thunder":
+    if name == "storm":
         rumble = _noise(n, lp=0.97)
         return [rumble[i] * (1.0 - i / n) * 0.8 for i in range(n)]
-    if name == "birds":
+    if name == "clearday":
         out = []
         for i in range(n):
             t = i / _RATE
@@ -209,7 +290,7 @@ def _synth(name, seconds=2.0):
             env = 0.3 * (1 if (i // (_RATE // 4)) % 2 == 0 else 0)
             out.append(chirp * env)
         return out
-    if name == "crickets":
+    if name == "clearnight":
         out = []
         for i in range(n):
             t = i / _RATE
@@ -231,7 +312,7 @@ def ensure_placeholder_sounds(directory=SOUNDS_DIR):
     """Create any missing ambient sound files. Returns the list created."""
     random.seed(42)  # deterministic placeholders
     created = []
-    for name in ["rain-soft", "wind", "thunder", "birds", "crickets", "chime"]:
+    for name in ["rain", "cloud", "storm", "clearday", "clearnight", "chime"]:
         path = os.path.join(directory, f"{name}.wav")
         if not os.path.isfile(path):
             _write_wav(path, _synth(name))

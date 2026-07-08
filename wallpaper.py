@@ -232,55 +232,121 @@ def _render_storm(raw, stride, w, h, phase, brightness):
     _render_rain(raw, stride, w, h, phase, brightness, heavy=True)
 
 
-def _render_clear(raw, stride, w, h, phase, brightness):
-    """A warm sun that drifts slowly across the upper sky."""
-    cx = int(w * (0.18 + 0.64 * phase))
-    cy = int(h * 0.22)
-    _soft_glow(raw, stride, w, h, cx, cy, int(min(w, h) * 0.45),
-               (255, 236, 190), 0.5 * brightness)
+def _sun_xy(w, h, sun):
+    """
+    Screen position of the sun for daylight fraction *sun* (0=sunrise/east,
+    1=sunset/west): a low arc that peaks at midday. None -> centred, high.
+    """
+    if sun is None:
+        sun = 0.5
+    sun = max(0.0, min(1.0, sun))
+    elev = math.sin(math.pi * sun)                 # 0 at the horizons, 1 at noon
+    cx = int(w * (0.10 + 0.80 * sun))              # east (left) -> west (right)
+    cy = int(h * (0.40 - 0.26 * elev))             # low near the edges, high at noon
+    return cx, cy, elev
+
+
+def _render_sun_rays(raw, stride, w, h, cx, cy, radius, color, alpha, phase):
+    """A few faint rays fanning out from the sun — cheap line sampling."""
+    if alpha <= 0:
+        return
+    for i in range(10):
+        ang = 2 * math.pi * i / 10 + phase * 0.6
+        dx, dy = math.cos(ang), math.sin(ang)
+        for r in range(int(radius * 0.35), int(radius * 1.05), 2):
+            _blend_px(raw, stride, w, h, int(cx + dx * r), int(cy + dy * r),
+                      color, alpha * (1 - r / (radius * 1.05)))
+
+
+def _render_clear(raw, stride, w, h, phase, brightness, sun=None):
+    """The sun: rises in the east, arcs overhead, sets in the west, with rays.
+
+    Near the horizons (low sun) the glow warms to orange; at noon it's white.
+    """
+    cx, cy, elev = _sun_xy(w, h, sun)
+    warm = _mix((255, 140, 40), (255, 250, 220), elev)   # orange low -> white high
+    R = int(min(w, h) * (0.42 + 0.12 * (1 - elev)))
+    _soft_glow(raw, stride, w, h, cx, cy, R, warm, 0.55 * brightness)
+    _render_sun_rays(raw, stride, w, h, cx, cy, R * 0.9, warm, 0.10 * brightness, phase)
     _soft_glow(raw, stride, w, h, cx, cy, max(3, int(min(w, h) * 0.07)),
-               (255, 250, 225), 0.85 * brightness)
+               (255, 250, 225), 0.9 * brightness)
 
 
-def _render_cloud(raw, stride, w, h, phase, brightness):
-    """Warm cream puffs drifting over a veiled-sun glow — cosy, not bleak."""
-    _soft_glow(raw, stride, w, h, int(w * 0.7), int(h * 0.2),
-               int(min(w, h) * 0.42), (255, 226, 180), 0.30 * brightness)
+def _render_cloud(raw, stride, w, h, phase, brightness, sun=None):
+    """Fluffy sunlit clouds over a bright sky — cheerful, never a flat grey."""
+    sx, sy, elev = _sun_xy(w, h, sun)
+    # Warm sunlit haze behind the clouds: golden low, bright white at noon.
+    veil = _mix((255, 175, 95), (255, 252, 235), elev)
+    _soft_glow(raw, stride, w, h, sx, sy, int(min(w, h) * 0.5),
+               veil, (0.30 + 0.25 * elev) * brightness)
     rnd = _prng(7)
-    for _ in range(4):
-        base_x = rnd()
-        cx = int(((base_x + phase * 0.15) % 1.1 - 0.05) * w)
-        cy = int((0.22 + rnd() * 0.5) * h)
-        rx = int((0.12 + rnd() * 0.12) * w)
-        ry = max(2, int(rx * 0.55))
-        _soft_ellipse(raw, stride, w, h, cx, cy, rx, ry, (247, 242, 236), 0.32)
+    for _ in range(6):
+        cx = int(((rnd() + phase * 0.1) % 1.1 - 0.05) * w)
+        cy = int((0.16 + rnd() * 0.55) * h)
+        rx = int((0.10 + rnd() * 0.14) * w)
+        ry = max(2, int(rx * (0.48 + rnd() * 0.22)))
+        # soft shadowed underside for depth, then a bright white top.
+        _soft_ellipse(raw, stride, w, h, cx, int(cy + ry * 0.45),
+                      int(rx * 0.85), max(2, int(ry * 0.7)), (205, 214, 232), 0.20)
+        _soft_ellipse(raw, stride, w, h, cx, cy, rx, ry, (253, 253, 255), 0.46)
 
 
-def _render_night(raw, stride, w, h, phase, brightness):
-    """A moon and a twinkling starfield over the deep night gradient."""
-    mx, my = int(w * 0.78), int(h * 0.22)
-    _soft_glow(raw, stride, w, h, mx, my, int(min(w, h) * 0.28), (215, 222, 255), 0.35)
-    _soft_glow(raw, stride, w, h, mx, my, max(3, int(min(w, h) * 0.06)), (240, 242, 255), 0.95)
+def _render_moon(raw, stride, w, h, sun):
+    """The moon: rises in the east, arcs overhead, sets in the west."""
+    mx, my, _elev = _sun_xy(w, h, sun)
+    _soft_glow(raw, stride, w, h, mx, my, int(min(w, h) * 0.26), (210, 220, 255), 0.35)
+    _soft_glow(raw, stride, w, h, mx, my, max(3, int(min(w, h) * 0.055)),
+               (240, 244, 255), 0.95)
+    return mx, my
+
+
+def _render_stars(raw, stride, w, h, phase, count):
+    """A twinkling starfield (fewer when clouds cover the sky)."""
     rnd = _prng(42)
-    for _ in range(max(30, w // 6)):
+    for _ in range(count):
         x = int(rnd() * w)
-        y = int(rnd() * h * 0.85)
+        y = int(rnd() * h * 0.9)
         tw = 0.5 + 0.5 * math.sin(2 * math.pi * (phase + rnd()))
         _blend_px(raw, stride, w, h, x, y, (255, 255, 255), (0.35 + 0.55 * rnd()) * tw)
 
 
-def _render_pattern(condition, raw, stride, w, h, phase, brightness):
+def _render_night(raw, stride, w, h, phase, brightness, sun=None):
+    """A twinkling starfield with the moon arcing across a clear night sky."""
+    _render_stars(raw, stride, w, h, phase, max(30, w // 6))
+    _render_moon(raw, stride, w, h, sun)
+
+
+def _render_cloudnight(raw, stride, w, h, phase, brightness, sun=None):
+    """A cloudy night: the moon + a few stars behind dark, moonlit clouds."""
+    _render_stars(raw, stride, w, h, phase, max(14, w // 14))
+    _render_moon(raw, stride, w, h, sun)
+    rnd = _prng(9)
+    for _ in range(5):
+        cx = int(((rnd() + phase * 0.08) % 1.1 - 0.05) * w)
+        cy = int((0.18 + rnd() * 0.55) * h)
+        rx = int((0.11 + rnd() * 0.13) * w)
+        ry = max(2, int(rx * (0.5 + rnd() * 0.2)))
+        _soft_ellipse(raw, stride, w, h, cx, int(cy + ry * 0.4),
+                      int(rx * 0.85), max(2, int(ry * 0.7)), (30, 38, 60), 0.30)
+        _soft_ellipse(raw, stride, w, h, cx, cy, rx, ry, (86, 96, 128), 0.36)
+        _soft_ellipse(raw, stride, w, h, cx, int(cy - ry * 0.3),
+                      int(rx * 0.7), max(2, int(ry * 0.4)), (168, 178, 210), 0.16)
+
+
+def _render_pattern(condition, raw, stride, w, h, phase, brightness, sun=None):
     c = (condition or "").lower()
     if "storm" in c:
         _render_storm(raw, stride, w, h, phase, brightness)
     elif "rain" in c:
         _render_rain(raw, stride, w, h, phase, brightness)
+    elif "cloudnight" in c:
+        _render_cloudnight(raw, stride, w, h, phase, brightness, sun)
     elif "night" in c:
-        _render_night(raw, stride, w, h, phase, brightness)
+        _render_night(raw, stride, w, h, phase, brightness, sun)
     elif "cloud" in c:
-        _render_cloud(raw, stride, w, h, phase, brightness)
+        _render_cloud(raw, stride, w, h, phase, brightness, sun)
     elif "clear" in c:
-        _render_clear(raw, stride, w, h, phase, brightness)
+        _render_clear(raw, stride, w, h, phase, brightness, sun)
 
 
 # ---------------------------------------------------------
@@ -304,15 +370,19 @@ def _drift(rgb, phase, strength):
 
 def shifted_base(r, g, b, tint_strength=0.4, phase=0.0, shift_strength=0.0):
     """The final tinted+drifted base colour (engine uses this for change-detection)."""
-    grey = (90, 90, 95)
-    base = _mix(grey, (r, g, b), max(0.0, min(1.0, tint_strength)))
+    # Desaturate toward a grey of the *same brightness* rather than a fixed
+    # grey. Lower strength => less saturated, but never lighter or darker — so
+    # day stays bright and night stays dark instead of everything going muddy.
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    neutral = (lum, lum, lum)
+    base = _mix(neutral, (r, g, b), max(0.0, min(1.0, tint_strength)))
     return _drift(base, phase, max(0.0, min(1.0, shift_strength)))
 
 
 def build_weather_image(r, g, b, brightness, tint_strength=0.4,
                         phase=0.0, shift_strength=0.0, condition="clear",
                         temperature=None, patterns=True, warmth=True,
-                        width=480, height=300):
+                        sun=None, width=480, height=300):
     """
     Render the weather colour as a sky-like vertical gradient, overlay the
     condition's pattern, and return the file path. *tint_strength* (0..1)
@@ -325,9 +395,9 @@ def build_weather_image(r, g, b, brightness, tint_strength=0.4,
     """
     base = shifted_base(r, g, b, tint_strength, phase, shift_strength)
 
-    # Sky gradient: lighter near the top, darker toward the bottom.
-    top = _mix(base, (255, 255, 255), 0.18 * brightness)
-    bottom = _mix(base, (0, 0, 0), 0.45)
+    # Sky gradient: lighter near the top, gently deeper toward the bottom.
+    top = _mix(base, (255, 255, 255), 0.20 * brightness)
+    bottom = _mix(base, (0, 0, 0), 0.36)
 
     # Cold outside → warm the palette so the desktop feels comforting.
     wf = warmth_factor(temperature) if warmth else 0.0
@@ -337,13 +407,14 @@ def build_weather_image(r, g, b, brightness, tint_strength=0.4,
 
     raw, stride = _build_raw_gradient(width, height, top, bottom)
     if patterns:
-        _render_pattern(condition, raw, stride, width, height, phase, brightness)
+        _render_pattern(condition, raw, stride, width, height, phase, brightness, sun)
 
-    # Phase + condition are in the filename so each frame is a distinct path —
-    # macOS/Windows only reload the desktop when the path changes.
+    # Phase + sun + condition are in the filename so each frame is a distinct
+    # path — macOS/Windows only reload the desktop when the path changes.
     cond = (condition or "na").lower()[:6]
+    sun_tag = "xx" if sun is None else f"{int(max(0.0, min(1.0, sun)) * 99):02d}"
     fname = (f"wallpaper_{cond}_{base[0]:02x}{base[1]:02x}{base[2]:02x}"
-             f"_{int(brightness*100):03d}_{int(phase*1000):03d}.png")
+             f"_{int(brightness*100):03d}_{int(phase*1000):03d}_{sun_tag}.png")
     path = os.path.join(CACHE_DIR, fname)
     png = _encode_png(raw, width, height)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -371,10 +442,14 @@ def _cleanup_old(keep=None):
 # Set the desktop background
 # ---------------------------------------------------------
 
-def set_wallpaper(path: str) -> bool:
-    """Set *path* as the desktop background. Returns True on success."""
+def set_wallpaper(path: str, multi=True) -> bool:
+    """Set *path* as the desktop background. Returns True on success.
+
+    *multi*: when True, set it on every connected monitor; otherwise just the
+    main one.
+    """
     if sys.platform == "darwin":
-        return _set_wallpaper_macos(path)
+        return _set_wallpaper_macos(path, multi)
     elif sys.platform == "win32":
         return _set_wallpaper_windows(path)
     else:
@@ -382,13 +457,35 @@ def set_wallpaper(path: str) -> bool:
         return False
 
 
-def _set_wallpaper_macos(path: str) -> bool:
+def _set_wallpaper_macos(path: str, multi=True) -> bool:
+    # Use a POSIX file reference — more reliable than a bare string path on
+    # recent macOS (Sonoma/Sequoia). With *multi*, set every desktop (one per
+    # display); otherwise just the main desktop.
+    if multi:
+        target = ('  repeat with d in desktops\n'
+                  '    set picture of d to thePic\n'
+                  '  end repeat\n')
+    else:
+        target = '  set picture of desktop 1 to thePic\n'
+    script = (
+        'tell application "System Events"\n'
+        f'  set thePic to POSIX file "{path}"\n'
+        f'{target}'
+        'end tell'
+    )
     try:
-        subprocess.run(
-            ["osascript", "-e",
-             f'tell application "System Events" to set picture of every desktop to "{path}"'],
-            check=True, capture_output=True, text=True, timeout=10,
-        )
+        res = subprocess.run(["osascript", "-e", script],
+                             capture_output=True, text=True, timeout=10)
+        if res.returncode != 0:
+            # Fall back to the classic one-liner before giving up.
+            res = subprocess.run(
+                ["osascript", "-e",
+                 f'tell application "System Events" to set picture of every desktop to "{path}"'],
+                capture_output=True, text=True, timeout=10)
+        if res.returncode != 0:
+            print(f"[wallpaper] osascript error setting wallpaper: "
+                  f"{res.stderr.strip() or res.returncode}")
+            return False
         print(f"[wallpaper] macOS desktop set to {path}")
         return True
     except Exception as e:
@@ -417,10 +514,11 @@ def _set_wallpaper_windows(path: str) -> bool:
 
 def apply_weather_wallpaper(r, g, b, brightness, tint_strength=0.4,
                             phase=0.0, shift_strength=0.0, condition="clear",
-                            temperature=None, patterns=True, warmth=True) -> bool:
+                            temperature=None, patterns=True, warmth=True,
+                            sun=None, multi=True) -> bool:
     """Build the (optionally drifted) weather image and apply it."""
     path = build_weather_image(r, g, b, brightness, tint_strength,
                                phase=phase, shift_strength=shift_strength,
                                condition=condition, temperature=temperature,
-                               patterns=patterns, warmth=warmth)
-    return set_wallpaper(path)
+                               patterns=patterns, warmth=warmth, sun=sun)
+    return set_wallpaper(path, multi=multi)

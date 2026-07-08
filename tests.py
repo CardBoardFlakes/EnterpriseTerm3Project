@@ -75,28 +75,51 @@ def test_config():
 # ---------------------------------------------------------
 def test_weather():
     section("weather")
-    cfg = config.default_config()
-    cfg["manual_weather"] = "rain"
-    w = weather.get_effective_weather(cfg)
-    check("manual weather honoured", w["condition"] == "rain")
-    check("manual source tagged", w["source"] == "manual")
-    check("is_night present", "is_night" in w)
 
-    cfg["manual_time"] = "night"
-    w = weather.get_effective_weather(cfg)
-    check("manual time night", w["is_night"] is True)
-    cfg["manual_time"] = "day"
-    w = weather.get_effective_weather(cfg)
-    check("manual time day", w["is_night"] is False)
+    # Stub live data so we can assert manual overrides don't clobber it.
+    orig = weather.get_weather
+    import datetime as _dt
+    sr = _dt.datetime.combine(_dt.date.today(), _dt.time(6, 0))
+    ss = _dt.datetime.combine(_dt.date.today(), _dt.time(20, 0))
+    weather.get_weather = lambda *a, **k: {
+        "condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
+        "temperature": 20.0, "feels_like": 19.0, "humidity": 55, "uv_index": 4,
+        "uv_index_max": 6, "pressure": 1013, "rain": 0, "precip_chance": 10,
+        "wind_speed": 12, "wind_gust": 20, "wind_dir": 180, "cloud_cover": 10,
+    }
+    try:
+        cfg = config.default_config()
+        cfg["manual_weather"] = "rain"
+        w = weather.get_effective_weather(cfg)
+        check("manual weather honoured", w["condition"] == "rain")
+        check("condition_source is manual", w["condition_source"] == "manual")
+        check("live source preserved (not manual)", w["source"] == "live")
+        # The key fix: live measurements survive the manual override.
+        check("live temperature preserved", w["temperature"] == 20.0)
+        check("live humidity preserved", w["humidity"] == 55)
+        check("live uv preserved", w["uv_index"] == 4)
+        check("is_night present", "is_night" in w)
+
+        cfg["manual_time"] = "night"
+        check("manual time night", weather.get_effective_weather(cfg)["is_night"] is True)
+        cfg["manual_time"] = "day"
+        check("manual time day", weather.get_effective_weather(cfg)["is_night"] is False)
+    finally:
+        weather.get_weather = orig
+
+    # Extra live fields flow through get_weather (stubbed request layer).
+    check("MEASUREMENT_KEYS covers uv+humidity",
+          "uv_index" in weather.MEASUREMENT_KEYS and "humidity" in weather.MEASUREMENT_KEYS)
 
     # Offline fallback: force live fetch to fail.
-    orig = weather.get_weather
     weather.get_weather = lambda *a, **k: (_ for _ in ()).throw(ConnectionError("no net"))
     try:
         cfg2 = config.default_config()  # manual_weather=auto
         w = weather.get_effective_weather(cfg2)
         check("offline fallback works", w["source"] == "fallback"
               and w["condition"] in weather.CONDITIONS)
+        check("fallback has measurement keys (None)",
+              all(k in w for k in weather.MEASUREMENT_KEYS))
     finally:
         weather.get_weather = orig
 
@@ -114,6 +137,84 @@ def test_theme():
     check("night dims colour", (r2 + g2 + b2) < (r + g + b))
     check("nearest accent blue", theme._nearest_macos_accent(0, 120, 250)[0] == "Blue")
     check("nearest accent red", theme._nearest_macos_accent(250, 70, 70)[0] == "Red")
+
+
+def test_day_phase():
+    section("time-of-day phases")
+    import datetime as dt
+    sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
+    ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
+
+    def at(h, m=0):
+        return dt.datetime.combine(dt.date.today(), dt.time(h, m))
+
+    expected = {3: "night", 6: "sunrise", 8: "morning", 13: "midday",
+                17: "afternoon", 20: "sunset", 21: "dusk", 23: "night"}
+    for h, want in expected.items():
+        check(f"{h:02d}:00 -> {want}", theme.compute_day_phase(sr, ss, at(h)) == want)
+
+    # Brightness ordering across phases.
+    check("midday is brightest", theme.phase_light("midday")[0] == 1.0)
+    check("night is darkest phase", theme.phase_light("night")[0] < 0.2)
+    check("sunset dimmer than midday",
+          theme.phase_light("sunset")[0] < theme.phase_light("midday")[0])
+
+    # Sunrise/sunset tints are warmer (red-vs-blue) than midday's neutral light.
+    blue = (80, 160, 255)
+    warmth = lambda p: (lambda c: c[0] - c[2])(theme.apply_phase_tint(blue, p))
+    check("sunset warmer than midday", warmth("sunset") > warmth("midday"))
+    check("sunrise warmer than midday", warmth("sunrise") > warmth("midday"))
+
+    # normalize + manual mapping.
+    check("day normalizes to midday", theme.normalize_phase("day") == "midday")
+    check("unknown phase -> None", theme.normalize_phase("teatime") is None)
+    check("all TIME_CHOICES phases valid",
+          all(theme.normalize_phase(p) for p in config.TIME_CHOICES if p != "auto"))
+
+    # Manual phase flows through compute_theme_color with its own brightness.
+    (_c, b_mid) = theme.compute_theme_color("clear", sr, ss, phase="midday")
+    (_c2, b_night) = theme.compute_theme_color("clear", sr, ss, phase="night")
+    check("phase midday full brightness", b_mid == 1.0)
+    check("phase night dim", b_night < 0.2)
+
+    # Sun tracks east -> west across the day, and is down at night/dusk.
+    check("sun rises in the east (low frac)", theme.phase_sun_fraction("sunrise") < 0.25)
+    check("sun sets in the west (high frac)", theme.phase_sun_fraction("sunset") > 0.75)
+    check("sunrise east of sunset",
+          theme.phase_sun_fraction("sunrise") < theme.phase_sun_fraction("sunset"))
+    check("no sun at night", theme.phase_sun_fraction("night") is None)
+    check("day_fraction ~0.5 at solar noon",
+          abs(theme.day_fraction(sr, ss, at(13)) - 0.5) < 0.01)
+    check("day_fraction None before sunrise", theme.day_fraction(sr, ss, at(3)) is None)
+
+    # Moon arcs across the night: 0 just after sunset -> 1 near sunrise.
+    check("night_fraction None during day", theme.night_fraction(sr, ss, at(13)) is None)
+    just_after = theme.night_fraction(sr, ss, at(20, 30))
+    pre_dawn = theme.night_fraction(sr, ss, at(5, 30))
+    check("moon low just after sunset", just_after is not None and just_after < 0.2)
+    check("moon high near sunrise", pre_dawn is not None and pre_dawn > 0.8)
+    check("moon travels through the night", just_after < pre_dawn)
+    # celestial_fraction: sun by day, moon by night, never None.
+    check("celestial uses sun by day",
+          abs(theme.celestial_fraction(None, sr, ss, at(13)) - 0.5) < 0.01)
+    check("celestial uses moon by night",
+          theme.celestial_fraction(None, sr, ss, at(23)) is not None)
+
+    # Vivid, distinct accents (not grey): dawn/dusk warm, noon blue.
+    csr = theme.compute_theme_color("clear", sr, ss, phase="sunset")[0]
+    cmd = theme.compute_theme_color("clear", sr, ss, phase="midday")[0]
+    check("sunset accent is Orange", theme._nearest_macos_accent(*csr)[0] == "Orange")
+    check("midday accent is Blue", theme._nearest_macos_accent(*cmd)[0] == "Blue")
+    check("sunset is warm (r > b)", csr[0] > csr[2])
+
+    # is_night mapping used by the rest of the app.
+    check("night phase is night", theme.phase_is_night("night"))
+    check("sunset phase is not night", not theme.phase_is_night("sunset"))
+    for mt, night in [("sunset", False), ("midday", False), ("night", True)]:
+        cfg = config.default_config()
+        cfg["manual_time"] = mt
+        w = weather.get_effective_weather(cfg)
+        check(f"manual '{mt}' is_night={night}", w["is_night"] is night)
 
     # apply (stub the OS setters)
     o1, o2 = theme.set_macos_theme, theme.set_windows_accent
@@ -152,6 +253,133 @@ def test_wallpaper():
             wallpaper.CACHE_DIR = orig
 
 
+def _chroma(rgb):
+    return max(rgb) - min(rgb)
+
+
+def test_profiles():
+    section("mood profiles")
+    import profiles
+    check("names present", profiles.PROFILE_NAMES == ["focus", "creativity", "relax"])
+    check("none => unchanged colour", profiles.adjust_color((60, 120, 200), "none") == (60, 120, 200))
+    check("focus desaturates", _chroma(profiles.adjust_color((60, 120, 200), "focus")) <
+          _chroma((60, 120, 200)))
+    check("creativity saturates", _chroma(profiles.adjust_color((120, 140, 160), "creativity")) >
+          _chroma((120, 140, 160)))
+    warm = profiles.adjust_color((90, 120, 170), "relax")
+    check("relax warms (r-b rises)", (warm[0] - warm[2]) > (90 - 170))
+
+    base = {"sound_volume": 25, "wallpaper_animated": True, "wallpaper_backend": "png"}
+    check("none overlay is identity", profiles.overlay_config(base, "none") is base)
+    foc = profiles.overlay_config(base, "focus")
+    check("focus quiets sound", foc["sound_volume"] == 12)
+    check("focus stops motion", foc["wallpaper_animated"] is False)
+    cre = profiles.overlay_config(base, "creativity")
+    check("creativity enables motion", cre["wallpaper_animated"] is True)
+    check("overlay is non-destructive", base["sound_volume"] == 25)
+
+
+def test_seasons():
+    section("seasons")
+    import datetime as dt
+    check("north july = summer", theme.season_for(dt.date(2026, 7, 15), "north") == "summer")
+    check("south july = winter", theme.season_for(dt.date(2026, 7, 15), "south") == "winter")
+    check("north dec = winter", theme.season_for(dt.date(2026, 12, 15), "north") == "winter")
+    check("hemisphere from -lat = south", theme.hemisphere_for(-33.8, "auto") == "south")
+    check("hemisphere from +lat = north", theme.hemisphere_for(51.5, "auto") == "north")
+    check("explicit hemisphere wins", theme.hemisphere_for(-33.8, "north") == "north")
+    sr = dt.datetime(2026, 7, 15, 6, 0)
+    ss = dt.datetime(2026, 7, 15, 20, 0)
+    plain = theme.compute_theme_color("clear", sr, ss, phase="midday")[0]
+    autumn = theme.compute_theme_color("clear", sr, ss, phase="midday", season="autumn")[0]
+    check("season changes the colour", autumn != plain)
+    check("autumn is warmer (more red)", autumn[0] > plain[0])
+
+
+def test_transitions():
+    section("gradual transitions")
+    # Easing moves partway, converges, and is a no-op when instant.
+    step1 = engine._ease_rgb((0, 0, 0), (100, 0, 0), 1.0, 9.0)
+    check("ease moves toward target", 0 < step1[0] < 100)
+    cur = (0, 0, 0)
+    for _ in range(60):
+        cur = engine._ease_rgb(cur, (100, 0, 0), 1.0, 9.0)
+    check("ease converges", abs(cur[0] - 100) < 2)
+    check("ease from None snaps to target", engine._ease_rgb(None, (50, 60, 70), 1, 9) == (50, 60, 70))
+    check("ease duration 0 snaps", engine._ease_rgb((0, 0, 0), (100, 0, 0), 1, 0) == (100, 0, 0))
+
+    # Continuous sky light: a 2-minute step produces only a tiny colour change
+    # (no sudden phase jump).
+    import datetime as dt
+    sr = dt.datetime(2026, 6, 1, 6, 0)
+    ss = dt.datetime(2026, 6, 1, 20, 0)
+    def at(h, m):
+        return dt.datetime(2026, 6, 1, h, m)
+    near_sunset_a = theme.compute_theme_color("clear", sr, ss, now=at(19, 58))[0]
+    near_sunset_b = theme.compute_theme_color("clear", sr, ss, now=at(20, 0))[0]
+    delta = max(abs(near_sunset_a[i] - near_sunset_b[i]) for i in range(3))
+    check("time transition is gradual (small step)", delta < 12)
+
+
+def test_high_contrast():
+    section("accessibility — high contrast")
+    hc = theme.high_contrast((90, 120, 170))
+    check("high contrast maximises saturation", _chroma(hc) > _chroma((90, 120, 170)))
+    check("high contrast keeps it a strong colour", max(hc) >= 200)
+    grey = theme.high_contrast((128, 128, 128))
+    check("grey becomes a bold colour", grey in [(255, 255, 0), (10, 10, 10)])
+
+    # Config helper maps the new keys.
+    import gui
+    cfg = gui.apply_values_to_config(config.default_config(), {
+        "enabled": True, "dynamic_theme": True, "wallpaper": True, "ambient_sound": True,
+        "tasks": True, "tint": 40, "volume": 25, "tick_interval": 30, "weather_refresh": 600,
+        "wallpaper_dynamic": True, "wallpaper_shift": 35, "p_work": 25, "p_break": 5,
+        "p_long": 15, "p_cycles": 4, "manual_weather": "auto", "manual_time": "auto",
+        "manual_theme_color": "auto", "run_at_login": False,
+        "active_profile": "relax", "accessibility_mode": "high_contrast",
+        "hemisphere": "south", "seasonal_themes": False, "multi_monitor": False,
+        "smooth_transitions": False,
+    })
+    check("profile mapped", cfg["active_profile"] == "relax")
+    check("accessibility mapped", cfg["accessibility_mode"] == "high_contrast")
+    check("hemisphere mapped", cfg["hemisphere"] == "south")
+    check("seasonal toggle mapped", cfg["seasonal_themes"] is False)
+    check("multi-monitor mapped", cfg["multi_monitor"] is False)
+    check("smooth toggle mapped", cfg["smooth_transitions"] is False)
+    check("bad profile falls back to none",
+          gui.apply_values_to_config(config.default_config(),
+                                     {**_gui_min_values(), "active_profile": "banana"}
+                                     )["active_profile"] == "none")
+
+
+def _gui_min_values():
+    return {"enabled": True, "dynamic_theme": True, "wallpaper": True, "ambient_sound": True,
+            "tasks": True, "tint": 40, "volume": 25, "tick_interval": 30, "weather_refresh": 600,
+            "wallpaper_dynamic": True, "wallpaper_shift": 35, "p_work": 25, "p_break": 5,
+            "p_long": 15, "p_cycles": 4, "manual_weather": "auto", "manual_time": "auto",
+            "manual_theme_color": "auto", "run_at_login": False}
+
+
+def test_wallpaper_motion():
+    section("wallpaper motion (friendly chooser)")
+    c = config.default_config()
+    check("default is off", config.motion_from_config(c) == "off")
+    c["wallpaper_animated"] = True
+    check("animated png => smooth", config.motion_from_config(c) == "smooth")
+    c["wallpaper_backend"] = "web"
+    check("web backend => ultra", config.motion_from_config(c) == "ultra")
+
+    for m, backend in [("off", "png"), ("smooth", "png"), ("ultra", "web")]:
+        c2 = config.apply_motion(config.default_config(), m)
+        check(f"{m} sets backend {backend}", c2["wallpaper_backend"] == backend)
+        check(f"{m} round-trips", config.motion_from_config(c2) == m)
+    check("smooth enables animation",
+          config.apply_motion(config.default_config(), "smooth")["wallpaper_animated"] is True)
+    check("off disables animation",
+          config.apply_motion(config.default_config(), "off")["wallpaper_animated"] is False)
+
+
 def test_wallpaper_patterns():
     section("wallpaper patterns + warmth")
 
@@ -175,8 +403,24 @@ def test_wallpaper_patterns():
         before = bytes(raw)
         wallpaper._render_pattern(cond, raw, stride, w, h, 0.3, 1.0)
         return raw != before
-    for cond in ("clear", "cloud", "rain", "storm", "night"):
+    for cond in ("clear", "cloud", "rain", "storm", "night", "cloudnight"):
         check(f"{cond} pattern paints pixels", paints(cond))
+
+    # Cloudy night differs from a clear night (clouds added), and the moon
+    # position tracks the `sun` fraction (east vs west).
+    def render(cond, sun):
+        w, h = 80, 60
+        raw, st = wallpaper._build_raw_gradient(w, h, (20, 26, 50), (5, 8, 20))
+        wallpaper._render_pattern(cond, raw, st, w, h, 0.3, 0.15, sun)
+        return bytes(raw)
+    check("cloudy night != clear night", render("cloudnight", 0.5) != render("night", 0.5))
+    check("moon moves east->west", render("night", 0.1) != render("night", 0.9))
+
+    # Engine picks the right wallpaper condition for the sky.
+    check("clear night -> night", engine._pattern_condition("clear", True) == "night")
+    check("cloudy night -> cloudnight", engine._pattern_condition("cloud", True) == "cloudnight")
+    check("cloudy day stays cloud", engine._pattern_condition("cloud", False) == "cloud")
+    check("rain at night stays rain", engine._pattern_condition("rain", True) == "rain")
 
     # Rain trickles: different phase => different pixels.
     w, h = 80, 60
@@ -212,22 +456,76 @@ def test_wallpaper_patterns():
 # ---------------------------------------------------------
 def test_sound():
     section("sound")
-    check("rain->rain-soft", sound.select_ambient("rain", False).endswith("rain-soft.wav"))
-    check("storm->thunder", sound.select_ambient("storm", False).endswith("thunder.wav"))
-    check("clear day->birds", sound.select_ambient("clear", False).endswith("birds.wav"))
-    check("clear night->crickets", sound.select_ambient("clear", True).endswith("crickets.wav"))
-    check("cloud->wind", sound.select_ambient("cloud", False).endswith("wind.wav"))
+    check("rain->rain", sound.select_ambient("rain", False).endswith("rain.wav"))
+    check("storm->storm", sound.select_ambient("storm", False).endswith("storm.wav"))
+    check("clear day->clearday", sound.select_ambient("clear", False).endswith("clearday.wav"))
+    check("clear night->clearnight", sound.select_ambient("clear", True).endswith("clearnight.wav"))
+    check("night->clearnight", sound.select_ambient("night", True).endswith("clearnight.wav"))
+    check("cloud->cloud", sound.select_ambient("cloud", False).endswith("cloud.wav"))
 
     with tempfile.TemporaryDirectory() as d:
         created = sound.ensure_placeholder_sounds(directory=d)
         check("placeholders created", len(created) == 6)
-        sample = os.path.join(d, "rain-soft.wav")
+        sample = os.path.join(d, "rain.wav")
         with wave.open(sample, "rb") as wf:
             check("wav mono 16-bit", wf.getnchannels() == 1 and wf.getsampwidth() == 2)
             check("wav has frames", wf.getnframes() > 1000)
         # second call creates nothing new
         again = sound.ensure_placeholder_sounds(directory=d)
         check("placeholders idempotent", again == [])
+
+
+def test_sound_variants_and_modes():
+    section("sound variants + random mode")
+    import random as _r
+    import datetime as dt
+
+    # --- variant discovery -------------------------------------------
+    with tempfile.TemporaryDirectory() as d:
+        for fn in ["rain.wav", "rain2.wav", "rain-heavy.wav",
+                   "cloud.wav", "clearday.wav", "clearnight.wav", "chime.wav"]:
+            open(os.path.join(d, fn), "wb").close()
+        v = sound.list_variants("rain", d)
+        check("finds all rain*.wav variants", len(v) == 3)
+        check("variants are all rain files",
+              all("rain" in os.path.basename(x) for x in v))
+        cd = sound.list_variants("clearday", d)
+        check("clearday not matched by clearnight",
+              len(cd) == 1 and cd[0].endswith("clearday.wav"))
+        pick = sound.pick_variant("rain", False, d, rng=_r.Random(0))
+        check("pick_variant returns a real variant", pick in v)
+        check("pick_variant falls back to base when none",
+              sound.pick_variant("storm", False, d).endswith("storm.wav"))
+
+    # --- engine random mode: occasional, not continuous --------------
+    counts = {"play": 0, "stop": 0}
+    saved = (sound.play_ambient, sound.stop_sound, sound.set_volume,
+             sound.pick_variant, theme.apply_theme_color,
+             wallpaper.apply_weather_wallpaper)
+    sound.play_ambient = lambda *a, **k: counts.__setitem__("play", counts["play"] + 1)
+    sound.stop_sound = lambda *a, **k: counts.__setitem__("stop", counts["stop"] + 1)
+    sound.set_volume = lambda *a, **k: None
+    sound.pick_variant = lambda *a, **k: "sounds/rain.wav"
+    theme.apply_theme_color = lambda *a, **k: "t"
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: True
+    try:
+        cfg = config.default_config()
+        cfg["manual_weather"] = "rain"
+        cfg["sound_mode"] = "random"
+        cfg["sound_interval_minutes"] = 5
+        cfg["features"]["wallpaper"] = False
+        eng = engine.Engine()
+        t0 = dt.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+        eng.step(cfg, None, now=t0)
+        check("random plays once at start", counts["play"] == 1)
+        eng.step(cfg, None, now=t0)
+        check("random not replayed immediately", counts["play"] == 1)
+        eng.step(cfg, None, now=t0 + dt.timedelta(minutes=20))
+        check("random replays after the interval", counts["play"] == 2)
+    finally:
+        (sound.play_ambient, sound.stop_sound, sound.set_volume,
+         sound.pick_variant, theme.apply_theme_color,
+         wallpaper.apply_weather_wallpaper) = saved
 
 
 # ---------------------------------------------------------
@@ -259,6 +557,26 @@ def test_tasks():
         check("once due when past", t3 in store.due_tasks())
         store.mark_fired(t3)
         check("once not due after fired", t3 not in store.due_tasks())
+
+        # Future-dated one-off (as the GUI now assembles it: "YYYY-MM-DDT HH:MM").
+        future_day = datetime.date.today() + datetime.timedelta(days=3)
+        tf = store.add_task("Future", type="once",
+                            datetime_str=f"{future_day.isoformat()}T09:00")
+        check("future task not due today", tf not in store.due_tasks(now))
+        at_future = datetime.datetime.combine(future_day, datetime.time(9, 30))
+        check("future task due on the day", tf in store.due_tasks(at_future))
+        store.remove_task(tf["id"])
+
+        # GUI row formatting (plain-English, no raw internals).
+        import gui
+        check("daily 'when' reads friendly",
+              gui._task_when_str({"type": "daily", "time": "07:30"}) == "Every day · 07:30")
+        check("once 'when' shows a date",
+              "·" in gui._task_when_str({"type": "once", "datetime": "2026-08-01T09:00"}))
+        check("does shows weather target",
+              gui._task_does_str({"action": "set_weather", "action_value": "rain"}) == "Weather → rain")
+        check("notify does is friendly",
+              gui._task_does_str({"action": "notify"}) == "Notify me")
 
         # disabled
         store.update_task("t1", enabled=False)
@@ -612,9 +930,16 @@ def main():
     test_config()
     test_weather()
     test_theme()
+    test_day_phase()
+    test_profiles()
+    test_seasons()
+    test_transitions()
+    test_high_contrast()
     test_wallpaper()
+    test_wallpaper_motion()
     test_wallpaper_patterns()
     test_sound()
+    test_sound_variants_and_modes()
     test_tasks()
     test_autostart()
     test_webwall()
