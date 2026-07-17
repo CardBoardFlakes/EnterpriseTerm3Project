@@ -882,7 +882,12 @@ class App:
             if self.engine_thread and self.engine_thread.is_alive():
                 # The engine applies on its own (single) thread — just nudge it.
                 # Running a second tick here would fight it (concurrent pygame /
-                # osascript access crashes on macOS).
+                # osascript access crashes on macOS). Drop its change-guards so
+                # the new look (e.g. a picked accent) applies immediately instead
+                # of being suppressed by the signature / redraw-interval checks.
+                eng = self.engine_thread.engine
+                eng._last_theme = None
+                eng._last_wall_at = None
                 self.engine_thread.wake()
                 self.v_status.set(note)
                 return

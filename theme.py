@@ -385,7 +385,9 @@ def compute_day_phase(sunrise, sunset, now=None):
     set_ = _secs_of_day(sunset)
     noon = (rise + set_) / 2
     H = 3600
-    if now_s < rise - 0.5 * H or now_s >= set_ + 1.5 * H:
+    # Night begins ~45 min after sunset (not 1.5 h) so the sky darkens soon
+    # after it's actually dark out, instead of lingering on a warm "sunset".
+    if now_s < rise - 0.5 * H or now_s >= set_ + 0.75 * H:
         return "night"
     if now_s < rise + 0.5 * H:
         return "sunrise"
@@ -395,7 +397,7 @@ def compute_day_phase(sunrise, sunset, now=None):
         return "midday"
     if now_s < set_ - 0.5 * H:
         return "afternoon"
-    if now_s < set_ + 0.5 * H:
+    if now_s < set_ + 0.25 * H:
         return "sunset"
     return "dusk"
 
@@ -456,7 +458,7 @@ def sky_light(sunrise, sunset, now=None):
         (0.0, "night"), (rise - 0.75 * H, "night"), (rise + 0.25 * H, "sunrise"),
         (rise + 0.25 * H + 0.35 * (noon - rise), "morning"), (noon, "midday"),
         (noon + 0.6 * (set_ - noon), "afternoon"), (set_, "sunset"),
-        (set_ + 0.75 * H, "dusk"), (set_ + 1.5 * H, "night"), (DAY, "night"),
+        (set_ + 0.4 * H, "dusk"), (set_ + 0.75 * H, "night"), (DAY, "night"),
     ]
     anchors = []
     for tsec, ph in raw:
