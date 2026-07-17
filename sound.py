@@ -13,7 +13,13 @@ import random
 import struct
 import wave
 
-SOUNDS_DIR = "sounds"
+# Absolute so the app always finds your files regardless of the working
+# directory (Finder launch, run-at-login, `--once` from elsewhere, …).
+SOUNDS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sounds")
+
+# Wind at/above this speed (km/h) plays the "cloud" (windy) ambience even on an
+# otherwise clear sky.
+WIND_AMBIENCE_KMH = 25
 
 # (display label, base filename) for each weather the app has ambience for.
 # The chime is separate (task/schedule feedback), not weather ambience.
@@ -55,11 +61,12 @@ def _ensure_mixer():
 # Sound selection by weather + time of day
 # ---------------------------------------------------------
 
-def ambient_base(condition: str, is_night: bool) -> str:
+def ambient_base(condition: str, is_night: bool, wind_speed: float = 0) -> str:
     """
-    Map (condition, day/night) to a base sound name. Names are generic and
-    condition-based, so dropping your own file in sounds/ is obvious:
+    Map (condition, day/night, wind) to a base sound name. Names are generic
+    and condition-based, so dropping your own file in sounds/ is obvious:
       storm  rain  cloud  clearday  clearnight
+    Strong wind on an otherwise clear sky uses the "cloud" (windy) ambience.
     """
     cond = (condition or "").lower()
     if "storm" in cond:
@@ -74,9 +81,9 @@ def ambient_base(condition: str, is_night: bool) -> str:
         name = "clearnight"
     else:
         name = "cloud"
-    # Daytime ambience at night -> use the night variant.
-    if is_night and name == "clearday":
-        name = "clearnight"
+    # A clear-but-windy sky still gets the windy (cloud) soundscape.
+    if name in ("clearday", "clearnight") and wind_speed and wind_speed >= WIND_AMBIENCE_KMH:
+        name = "cloud"
     return name
 
 
@@ -109,13 +116,18 @@ def list_variants(base: str, directory=SOUNDS_DIR):
     return sorted(out)
 
 
-def pick_variant(condition: str, is_night: bool, directory=SOUNDS_DIR, rng=None):
-    """A randomly chosen variant path for the weather/time (falls back to base)."""
-    base = ambient_base(condition, is_night)
+def pick_base(base: str, directory=SOUNDS_DIR, rng=None):
+    """A randomly chosen variant path for a base name (falls back to base.wav)."""
     variants = list_variants(base, directory)
     if not variants:
         return os.path.join(directory, f"{base}.wav")
     return (rng or random).choice(variants)
+
+
+def pick_variant(condition: str, is_night: bool, directory=SOUNDS_DIR,
+                 rng=None, wind_speed: float = 0):
+    """A randomly chosen variant path for the weather/time (falls back to base)."""
+    return pick_base(ambient_base(condition, is_night, wind_speed), directory, rng)
 
 
 def open_folder(directory=SOUNDS_DIR):

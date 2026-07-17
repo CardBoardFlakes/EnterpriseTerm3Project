@@ -21,8 +21,10 @@ import theme
 import wallpaper
 import webwall
 import sound
+import music
 import perf
 import profiles
+import audiocheck
 import tasks as tasks_mod
 
 
@@ -54,7 +56,9 @@ def notify(title: str, message: str):
 # Task actions
 # ---------------------------------------------------------
 
-def _run_task_action(task: dict, cfg: dict):
+def _run_task_action(task: dict, cfg: dict) -> bool:
+    """Run a task's action. Returns True if it changed the *look* (so the
+    engine can re-apply the theme/wallpaper right away)."""
     action = task.get("action", "notify")
     value = task.get("action_value", "")
     title = task.get("title", "Task")
@@ -68,6 +72,7 @@ def _run_task_action(task: dict, cfg: dict):
             cfg["manual_weather"] = value
             config.save_config(cfg)
             print(f"[engine] Task {title!r} set manual_weather={value}")
+            return True
     elif action == "set_theme":
         try:
             rgb = [int(x) for x in str(value).split(",")]
@@ -75,8 +80,10 @@ def _run_task_action(task: dict, cfg: dict):
                 cfg["manual_theme_color"] = rgb
                 config.save_config(cfg)
                 print(f"[engine] Task {title!r} set manual_theme_color={rgb}")
+                return True
         except ValueError:
             print(f"[engine] Task {title!r} bad set_theme value: {value!r}")
+    return False
 
 
 # ---------------------------------------------------------
@@ -146,7 +153,8 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
 
     # --- Apply theme ---------------------------------------------------
     if config.feature_enabled(cfg, "dynamic_theme"):
-        desc = theme.apply_theme_color(r, g, b, brightness)
+        desc = theme.apply_theme_color(r, g, b, brightness,
+                                       cfg.get("appearance_mode", "auto"))
         status["applied"].append(f"theme: {desc}")
 
     # --- Apply wallpaper ----------------------------------------------
@@ -175,9 +183,13 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
               "Dashboard to change the desktop background.")
 
     # --- Ambient sound -------------------------------------------------
-    if config.feature_enabled(cfg, "ambient_sound"):
+    if config.feature_enabled(cfg, "ambient_sound") and other_audio_playing(cfg):
+        sound.stop_sound()
+        status["note"] = "ambient paused — other audio playing"
+    elif config.feature_enabled(cfg, "ambient_sound"):
         loop = (cfg.get("sound_mode") or "loop").lower() != "random"
-        path = sound.pick_variant(condition, is_night)
+        base = sound.ambient_base(condition, is_night, eff.get("wind_speed") or 0)
+        path = sound.pick_base(base)
         sound.play_ambient(condition, is_night, cfg.get("sound_volume", 25),
                            path=path, loop=loop)
         status["applied"].append(f"sound: {os.path.basename(path)}")
@@ -233,6 +245,21 @@ def _style_color(rgb, cfg):
     return tuple(int(c) for c in rgb)
 
 
+def other_audio_playing(cfg):
+    """
+    True if the app should hold its ambient sound because something else is
+    playing: our own music player, or (best effort) another app on the system.
+    """
+    if not cfg.get("pause_when_other_audio", False):
+        return False
+    try:
+        if music.is_playing():
+            return True
+    except Exception:
+        pass
+    return bool(audiocheck.external_audio_active())
+
+
 def _pattern_condition(condition, is_night):
     """
     The condition the *wallpaper* should draw. At night we show a night sky
@@ -278,6 +305,7 @@ class Engine:
         self._next_sound_at = None     # random mode: when to play next
         self._last_wall_key = None     # (drifted_rgb, brightness_bucket) last drawn
         self._last_wall_at = None
+        self._last_sun = None          # sun/moon fraction last drawn (for tracking)
         self._last_render = None       # cached frame inputs for animated redraws
         self._last_web = None          # last web-backend state written
         self._eased_rgb = None         # displayed colour, eased toward target
@@ -317,11 +345,17 @@ class Engine:
         if not lr:
             return False
         phase = (mono % ANIM_PERIOD) / ANIM_PERIOD
+        # Recompute the sun/moon position from the real clock each frame so it
+        # glides across the sky, tracking the actual sun rather than stepping.
+        sun = lr.get("sun")
+        if lr.get("sunrise") is not None:
+            sun = theme.celestial_fraction(lr.get("phase"), lr["sunrise"],
+                                           lr["sunset"], datetime.datetime.now())
         return wallpaper.apply_weather_wallpaper(
             lr["r"], lr["g"], lr["b"], lr["brightness"], lr["tint"],
             phase=phase, shift_strength=lr["shift"], condition=lr["condition"],
             temperature=lr["temperature"], patterns=lr["patterns"],
-            warmth=lr["warmth"], sun=lr.get("sun"), multi=lr.get("multi", True))
+            warmth=lr["warmth"], sun=sun, multi=lr.get("multi", True))
 
     # --- one cheap step -----------------------------------------------
     def step(self, cfg, store=None, now=None, animating=False):
@@ -395,9 +429,10 @@ class Engine:
 
         # --- theme: apply only when the visible signature changes ------
         if config.feature_enabled(cfg, "dynamic_theme"):
-            sig = theme.theme_signature(r, g, b, brightness)
+            appearance = cfg.get("appearance_mode", "auto")
+            sig = theme.theme_signature(r, g, b, brightness, appearance)
             if sig != self._last_theme:
-                desc = theme.apply_theme_color(r, g, b, brightness)
+                desc = theme.apply_theme_color(r, g, b, brightness, appearance)
                 self._last_theme = sig
                 status["applied"].append(f"theme: {desc}")
 
@@ -416,6 +451,8 @@ class Engine:
                 "temperature": eff.get("temperature"),
                 "patterns": patterns, "warmth": warmth, "sun": sun,
                 "multi": bool(cfg.get("multi_monitor", True)),
+                # For live sun/moon tracking in the animation loop.
+                "sunrise": eff["sunrise"], "sunset": eff["sunset"], "phase": phase,
             }
             backend = (cfg.get("wallpaper_backend") or "png").lower()
             if backend == "web":
@@ -440,16 +477,30 @@ class Engine:
                 target = wallpaper.shifted_base(r, g, b, tint, phase, shift)
                 bucket = round(brightness, 2)
                 min_iv = max(5, int(cfg.get("wallpaper_min_interval_seconds", 45)))
-                due = (self._last_wall_at is None
-                       or (now - self._last_wall_at).total_seconds() >= min_iv)
+                elapsed = (None if self._last_wall_at is None
+                           else (now - self._last_wall_at).total_seconds())
+                due = elapsed is None or elapsed >= min_iv
                 # A moving pattern is worth a redraw on the interval even when
                 # the base colour is steady (e.g. manual rain) — that's motion.
                 moving = dynamic and patterns and wallpaper.is_animated(pat_cond)
+                # Redraw as the sun/moon creeps across the sky, so it tracks the
+                # real sky instead of jumping — small threshold => gentle steps.
+                sun_moved = (patterns and sun is not None
+                             and (self._last_sun is None
+                                  or abs(sun - self._last_sun) >= 0.006))
                 changed = (self._last_wall_key is None
                            or self._last_wall_key[1] != bucket
                            or moving
+                           or sun_moved
                            or _color_delta(target, self._last_wall_key[0]) >= 2)
-                if due and changed:
+                # Periodically re-apply even when nothing changed. macOS only
+                # sets the *current* Space's wallpaper, so a set made while a
+                # fullscreen app is focused never reaches the normal desktop —
+                # this forces the visible Space to catch up after you return.
+                refresh = int(cfg.get("wallpaper_refresh_seconds", 90))
+                force = (refresh > 0 and elapsed is not None
+                         and elapsed >= max(min_iv, refresh))
+                if (due and changed) or force:
                     if wallpaper.apply_weather_wallpaper(
                             r, g, b, brightness, tint, phase=phase, shift_strength=shift,
                             condition=pat_cond, temperature=eff.get("temperature"),
@@ -457,11 +508,20 @@ class Engine:
                             multi=bool(cfg.get("multi_monitor", True))):
                         self._last_wall_key = (target, bucket)
                         self._last_wall_at = now
+                        self._last_sun = sun
                         status["applied"].append("wallpaper")
 
         # --- sound: loop continuously, or play a random clip now and then --
-        if config.feature_enabled(cfg, "ambient_sound"):
-            base = sound.ambient_base(condition, is_night)
+        if config.feature_enabled(cfg, "ambient_sound") and other_audio_playing(cfg):
+            # Something else is playing — get out of the way, resume later.
+            if self._sound_on:
+                sound.stop_sound()
+                self._sound_on = False
+            self._sound_base = None
+            status["note"] = "ambient paused — other audio playing"
+        elif config.feature_enabled(cfg, "ambient_sound"):
+            wind = eff.get("wind_speed") or 0
+            base = sound.ambient_base(condition, is_night, wind)
             vol = cfg.get("sound_volume", 25)
             mode = (cfg.get("sound_mode") or "loop").lower()
             base_changed = base != self._sound_base
@@ -473,7 +533,7 @@ class Engine:
                     self._sound_on = False
                 due = self._next_sound_at is None or now >= self._next_sound_at
                 if due or base_changed:
-                    path = sound.pick_variant(condition, is_night)
+                    path = sound.pick_base(base)
                     sound.play_ambient(condition, is_night, vol, path=path, loop=False)
                     self._sound_base = base
                     self._last_sound = path
@@ -485,7 +545,7 @@ class Engine:
             else:  # loop
                 self._next_sound_at = None
                 if base_changed or not self._sound_on:
-                    path = sound.pick_variant(condition, is_night)
+                    path = sound.pick_base(base)
                     sound.play_ambient(condition, is_night, vol, path=path, loop=True)
                     self._sound_base = base
                     self._sound_on = True
@@ -500,10 +560,18 @@ class Engine:
 
         # --- tasks ------------------------------------------------------
         if config.feature_enabled(cfg, "tasks") and store is not None:
+            visual_change = False
             for task in store.due_tasks(now):
-                _run_task_action(task, cfg)
+                if _run_task_action(task, cfg):
+                    visual_change = True
                 store.mark_fired(task, now)
                 status["fired_tasks"].append(task.get("title", task.get("id")))
+            if visual_change:
+                # A task changed the weather/theme — drop the guards so the new
+                # look applies on the very next step (and wake the loop fast).
+                self._last_wall_at = None
+                self._last_theme = None
+                self.transitioning = True
 
         return status
 

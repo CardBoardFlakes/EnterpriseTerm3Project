@@ -13,7 +13,24 @@ window or the main tabs.
 
 ---
 
-## Pomodoro timer
+## Timers
+
+The **Timers** tab has a mode switch at the top — **🍅 Pomodoro**, **⏲ Timer**
+(a plain countdown), and **⏱ Stopwatch**. They share the big display and
+Start/Reset buttons; the third button and the settings below change per mode.
+A running clock keeps going even while you view another mode.
+
+### ⏲ Timer (countdown)
+
+Set **Minutes**, press **Set**, then **Start**. It counts down and, at zero,
+plays the chime and shows a notification. Starting a finished timer restarts it.
+
+### ⏱ Stopwatch
+
+**Start** counts up from zero; the third button becomes **Lap** and records the
+current time into the laps list; **Reset** clears it.
+
+### 🍅 Pomodoro
 
 A classic work/break cycle to help you focus.
 
@@ -86,3 +103,9 @@ Tasks are evaluated on each engine step while the engine is **started** (or in
 after its time, once per day. A one-off fires the first step at or after its
 datetime, then is marked done. If the app isn't running at the exact minute,
 the task still fires the next time it runs that day.
+
+A **Change the weather / accent** task recolours the desktop **immediately**
+when it fires (it drops the normal redraw interval and cross-fades to the new
+look). *Notify me* and *Play a chime* don't change any colours — if you want the
+background to change, pick one of the "Change …" actions. The engine must be
+**Started** for tasks to run at all.

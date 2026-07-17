@@ -192,8 +192,20 @@ _MACOS_ACCENTS = [
     ("Graphite", -1, (142, 142, 147)),
 ]
 
-# Below this day/night brightness, switch to Dark mode.
+# Below this day/night brightness, switch to Dark mode (in "auto" mode).
 DARK_MODE_THRESHOLD = 0.5
+
+APPEARANCE_MODES = ["auto", "dark", "light"]
+
+
+def resolve_appearance(brightness, mode="auto"):
+    """"dark" or "light" — forced by *mode*, else from the day/night curve."""
+    m = (mode or "auto").lower()
+    if m == "dark":
+        return "dark"
+    if m == "light":
+        return "light"
+    return "dark" if brightness < DARK_MODE_THRESHOLD else "light"
 
 
 def _nearest_macos_accent(r, g, b):
@@ -204,12 +216,12 @@ def _nearest_macos_accent(r, g, b):
     )
 
 
-def set_macos_theme(r, g, b, brightness):
+def set_macos_theme(r, g, b, brightness, appearance="auto"):
     """Apply appearance + accent colour on macOS via osascript / defaults."""
     import subprocess
 
-    # 1. Dark / Light appearance from the day-night brightness curve.
-    dark = brightness < DARK_MODE_THRESHOLD
+    # 1. Dark / Light appearance — locked by *appearance*, else day/night curve.
+    dark = resolve_appearance(brightness, appearance) == "dark"
     try:
         subprocess.run(
             ["osascript", "-e",
@@ -515,34 +527,58 @@ def compute_theme_color(condition, sunrise, sunset, is_night_override=None,
     return final, bright
 
 
-def theme_signature(r, g, b, brightness):
+def set_windows_appearance(dark: bool):
+    """Force Windows apps + system Dark/Light appearance via the registry."""
+    import ctypes
+    import winreg
+    val = 0 if dark else 1
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(key, "AppsUseLightTheme", 0, winreg.REG_DWORD, val)
+        winreg.SetValueEx(key, "SystemUsesLightTheme", 0, winreg.REG_DWORD, val)
+        winreg.CloseKey(key)
+        ctypes.windll.user32.SendMessageTimeoutW(
+            0xFFFF, 0x001A, 0, "ImmersiveColorSet", 0x0002, 5000, ctypes.byref(ctypes.c_long()))
+        print(f"[theme] Windows appearance -> {'Dark' if dark else 'Light'}")
+    except Exception as e:
+        print(f"[theme] Failed to set Windows appearance: {e}")
+
+
+def theme_signature(r, g, b, brightness, appearance="auto"):
     """
     A hashable summary of what the user would actually *see* for this colour,
     so the engine can skip re-applying when nothing visible changed. On macOS
     the accent snaps to a named colour, so only the name + appearance matter.
     """
-    appearance = "dark" if brightness < DARK_MODE_THRESHOLD else "light"
+    ap = resolve_appearance(brightness, appearance)
     if sys.platform == "darwin":
-        return (appearance, _nearest_macos_accent(r, g, b)[1])
-    return (appearance, r, g, b)
+        return (ap, _nearest_macos_accent(r, g, b)[1])
+    return (ap, r, g, b)
 
 
-def apply_theme_color(r, g, b, brightness):
+def apply_theme_color(r, g, b, brightness, appearance="auto"):
     """
     Apply an already-computed RGB colour using whatever mechanism the
     current OS supports:
-      * Windows -> taskbar accent colour via the registry
+      * Windows -> taskbar accent colour (+ Dark/Light when locked)
       * macOS   -> Dark/Light appearance + nearest named accent colour
+    *appearance*: "auto" follows the day/night curve; "dark"/"light" lock it.
     Returns a short human-readable description of what was applied.
     """
+    ap = resolve_appearance(brightness, appearance)
     if sys.platform == "win32":
         set_windows_accent(r, g, b)
-        return f"Windows accent ({r},{g},{b})"
+        # Only touch the OS appearance when the user has locked it.
+        if (appearance or "auto").lower() in ("dark", "light"):
+            set_windows_appearance(ap == "dark")
+        return f"Windows {ap} + accent ({r},{g},{b})"
     elif sys.platform == "darwin":
-        set_macos_theme(r, g, b, brightness)
+        set_macos_theme(r, g, b, brightness, appearance)
         name, _idx, _rgb = _nearest_macos_accent(r, g, b)
-        appearance = "Dark" if brightness < DARK_MODE_THRESHOLD else "Light"
-        return f"macOS {appearance} + {name} accent"
+        return f"macOS {ap.capitalize()} + {name} accent"
     else:
         print(f"[theme] Dynamic theme not supported on {sys.platform!r} — skipping.")
         return "unsupported platform"

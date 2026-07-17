@@ -30,13 +30,22 @@ names and opens the folder for you.
 |---|---|
 | Clear sky, daytime | `clearday.wav` |
 | Clear sky, night (and the `night` condition) | `clearnight.wav` |
-| Cloudy (and the fallback) | `cloud.wav` |
+| Cloudy — **or a clear but windy sky** | `cloud.wav` |
 | Rain | `rain.wav` |
 | Storm | `storm.wav` |
 | A task/timer chime fires | `chime.wav` |
 
 Files must be **`.wav`**. (Renaming an `.mp3` won't work — convert it to WAV
 first.)
+
+> **Windy?** There's no separate "windy" sound — a strong wind on an otherwise
+> clear sky uses **`cloud.wav`** (the breezy/overcast ambience). So `cloud.wav`
+> is what you'll hear when it's windy. Pure "clear & calm" plays
+> `clearday`/`clearnight`.
+
+> The `sounds/` folder is found automatically next to the app, so your files
+> are picked up no matter where you launch from. Sound only plays while the
+> engine is **Started** (not with `--once`, which exits immediately).
 
 ---
 
@@ -89,6 +98,24 @@ Choose the **Playback** style on the Appearance → Sound card:
 
 ---
 
+## Pause when other audio plays
+
+Tick **Pause ambient when other audio is playing** (Appearance → Sound) and the
+weather ambience automatically stops while something else is playing, then
+resumes when it stops. It ducks for:
+
+- **your own music player** (in the Music tab) — always, reliably;
+- **another app**, best-effort per platform:
+  - **macOS** — Spotify / Apple Music that are already running (their player
+    state is `playing`). Browser/YouTube audio can't be detected this way.
+  - **Windows** — essentially any app, if [`pycaw`](https://pypi.org/project/pycaw/)
+    is installed (`pip install pycaw`); without it, only your own music ducks.
+
+So on macOS it reliably ducks for your own music and Spotify/Apple Music; other
+sources may not be detected.
+
+---
+
 ## Placeholder sounds
 
 If a base file is missing, the app synthesises a simple placeholder loop for it
@@ -98,3 +125,21 @@ of the box. Replace any of them with real audio whenever you like — see
 
 Sound not playing at all? See
 [Troubleshooting → no sound](TROUBLESHOOTING.md#theres-no-sound).
+
+---
+
+## Play your own music
+
+Separate from the weather ambience, you can play your **own downloaded songs**
+in the background while you work. Open **⏱ Focus & Tasks → Music**:
+
+- **Add songs…** — pick `.mp3` / `.ogg` / `.wav` files; they're copied into the
+  `music/` folder (next to the app). Or drop files there yourself and hit
+  **Refresh**.
+- **Play / ⏸ / ⏹ / ⏮ / ⏭** — play the selected track (double-click also plays);
+  it auto-advances to the next song when one ends.
+- **Music volume** — independent of the ambient volume; the two mix together.
+- **Open music folder** — reveal the folder in your file manager.
+
+Needs `pygame` (same as ambient sound). `.mp3` and `.ogg` stream well; some
+`.flac`/`.m4a` files may not load depending on your platform's codecs.

@@ -42,14 +42,18 @@ See the full walkthrough in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 | **Mood profiles** | Switchable **Focus / Creativity / Relax** profiles reshape the colours, motion and sound; toggle off with "None". |
 | **Multi-monitor** | Sets the wallpaper on every connected display (toggleable). |
 | **Accessibility** | A **high-contrast** mode forces bold, maximum-contrast colours and a black/white/yellow window. |
+| **Dark/Light lock** | Force the device (and app) to Dark or Light, or let it follow the time of day. |
 | **Weather wallpaper** | A sky-gradient background per condition, with moving patterns (rain, sun, clouds, stars) and a cosy warm tint when it's cold. |
 | **Animated wallpaper** | One **Off / Smooth / Ultra** choice — *Smooth* animates with zero setup; *Ultra* uses a free external app for GPU-smooth motion. |
-| **Ambient sound** | Weather/time soundscapes with your own files + random variants; play looped or occasionally. |
-| **Pomodoro timer** | Work / break / long-break cycles with chime + notification. |
+| **Ambient sound** | Weather/time soundscapes with your own files + random variants; play looped or occasionally. Windy skies use the cloudy ambience. |
+| **Music player** | Play your own downloaded songs (mp3/ogg/wav) in the background, with a playlist, auto-advance and its own volume. |
+| **Auto-duck** | Optionally pause the ambient sound while other audio plays (your music player, or best-effort Spotify/Apple Music on macOS / any app on Windows). |
+| **Timers** | A Timers tab with three modes: **Pomodoro** (work/break cycles), a plain **countdown Timer**, and a **Stopwatch** with laps. |
 | **Tasks & schedules** | Daily or one-off tasks that notify, chime, or switch the weather/theme. |
 | **Live weather panel** | Temperature, feels-like, humidity, UV index (with risk band), wind + gusts, rain chance and pressure. |
 | **Manual overrides** | Force a weather condition, time of day, or exact accent colour — the live data keeps showing the *real* outside conditions. |
 | **Time-of-day UI** | The app window itself follows the day: a light theme by day, dark at night, with a phase-tinted accent — matching the wallpaper/OS. |
+| **Location privacy** | Coordinates are rounded to a coarse, city-level area before use — your exact position never leaves the machine. |
 | **Run at login** | Optional auto-start (macOS LaunchAgent / Windows Run key). |
 
 ---
@@ -80,6 +84,33 @@ python tests.py             # run the test suite
 
 ---
 
+## Location & privacy
+
+The app **does not detect your location** — no GPS, no IP lookup, no OS query,
+no "auto-detect". It uses fixed coordinates:
+
+1. A hardcoded default in `config.py` — `{"lat": -33.8688, "lon": 151.2093,
+   "name": "Sydney"}`.
+2. Overridden only by the `location` block in **`config.json`** if you edit it
+   by hand (there's no GUI field for it yet).
+3. Those `lat`/`lon` are placed directly in the Open-Meteo request URL
+   (`…?latitude=<lat>&longitude=<lon>&…&timezone=auto`). `timezone=auto` just
+   returns times in that coordinate's timezone — it does not locate you.
+
+So until you edit `config.json`, it fetches weather for **Sydney**, wherever the
+computer actually is. To use your own area, set `location.lat` / `location.lon`
+(find them in any maps app) — see the
+[Configuration reference](docs/CONFIGURATION.md#location).
+
+**What leaves the machine:** only the configured `lat`/`lon` → Open-Meteo, over
+HTTPS, about once every 10 minutes. No API key or account is used. Everything
+else (settings, tasks, reminder text, audio) stays local in plaintext
+(`config.json`, `tasks.json`, `~/.environment_theme_controller/`). There is no
+telemetry or analytics. Coordinates are low-sensitivity **personal** data — for
+privacy, use a nearby town's coordinates rather than your exact address.
+
+---
+
 ## Project layout
 
 | File | Responsibility |
@@ -95,7 +126,10 @@ python tests.py             # run the test suite
 | `perf.py` | Load governor that throttles/pauses the Smooth animation |
 | `profiles.py` | Focus / Creativity / Relax mood profiles (colour + settings overlay) |
 | `sound.py` | Ambient sound selection, variants, playback, placeholder synth |
-| `pomodoro.py` | Productivity timer state machine |
+| `music.py` | Background music player for your own songs |
+| `audiocheck.py` | Best-effort detection of audio from other apps (for auto-duck) |
+| `pomodoro.py` | Pomodoro timer state machine |
+| `clocks.py` | Stopwatch + countdown timer |
 | `tasks.py` | Tasks & schedules store |
 | `activity.py` | Idle-time detection |
 | `autostart.py` | Run-at-login (LaunchAgent / Run key) |
@@ -111,7 +145,7 @@ wallpaper assets in `~/.environment_theme_controller/`.
 python tests.py
 ```
 
-A headless suite (**238 checks**) covering config + friendly-motion mapping,
+A headless suite (**301 checks**) covering config + friendly-motion mapping,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
 / warmth, the

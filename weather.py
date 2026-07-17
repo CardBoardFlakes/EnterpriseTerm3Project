@@ -108,15 +108,33 @@ def _is_night(sunrise, sunset, now=None) -> bool:
     return not (sunrise <= now <= sunset)
 
 
+def rounded_location(cfg: dict):
+    """
+    The configured coordinates rounded to ``location_precision`` decimals, so
+    only a coarse (city-level) position is ever used or sent. 1 dp ≈ 11 km.
+    """
+    loc = cfg.get("location", {})
+    try:
+        prec = int(cfg.get("location_precision", 1))
+    except (TypeError, ValueError):
+        prec = 1
+    prec = max(0, min(6, prec))
+    lat = round(float(loc.get("lat", LAT)), prec)
+    lon = round(float(loc.get("lon", LON)), prec)
+    return lat, lon
+
+
 def get_live_weather(cfg: dict) -> dict:
     """
     The real measured weather for the configured location (temperature,
     humidity, UV, wind, …), tagged ``source`` = "live" or "fallback". This is
     always the true outside data — manual overrides never touch it.
+
+    Coordinates are rounded to a coarse, city-level precision first (privacy).
     """
-    loc = cfg.get("location", {})
     try:
-        w = get_weather(loc.get("lat", LAT), loc.get("lon", LON))
+        lat, lon = rounded_location(cfg)
+        w = get_weather(lat, lon)
         w["source"] = "live"
         return w
     except Exception as e:

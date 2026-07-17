@@ -111,6 +111,23 @@ def test_weather():
     check("MEASUREMENT_KEYS covers uv+humidity",
           "uv_index" in weather.MEASUREMENT_KEYS and "humidity" in weather.MEASUREMENT_KEYS)
 
+    # Location privacy: coordinates are rounded before use.
+    cfg = config.default_config()
+    cfg["location"] = {"lat": -33.8688, "lon": 151.2093, "name": "Sydney"}
+    cfg["location_precision"] = 1
+    check("city precision rounds to ~11km", weather.rounded_location(cfg) == (-33.9, 151.2))
+    cfg["location_precision"] = 2
+    check("neighbourhood precision", weather.rounded_location(cfg) == (-33.87, 151.21))
+    cfg["location_precision"] = 4
+    check("precise keeps 4 dp", weather.rounded_location(cfg) == (-33.8688, 151.2093))
+    # get_live_weather sends only the rounded coordinates.
+    seen = {}
+    weather.get_weather = lambda lat, lon: (seen.update(lat=lat, lon=lon) or {
+        "condition": "clear", "sunrise": None, "sunset": None, "is_day": True})
+    cfg["location_precision"] = 1
+    weather.get_live_weather(cfg)
+    check("live fetch uses rounded coords", seen == {"lat": -33.9, "lon": 151.2})
+
     # Offline fallback: force live fetch to fail.
     weather.get_weather = lambda *a, **k: (_ for _ in ()).throw(ConnectionError("no net"))
     try:
@@ -216,6 +233,18 @@ def test_day_phase():
         w = weather.get_effective_weather(cfg)
         check(f"manual '{mt}' is_night={night}", w["is_night"] is night)
 
+    # Appearance lock: auto follows brightness, dark/light force it.
+    check("auto dark when dim", theme.resolve_appearance(0.2, "auto") == "dark")
+    check("auto light when bright", theme.resolve_appearance(0.9, "auto") == "light")
+    check("locked dark ignores brightness", theme.resolve_appearance(0.9, "dark") == "dark")
+    check("locked light ignores brightness", theme.resolve_appearance(0.1, "light") == "light")
+    # A locked appearance changes the theme signature (so it re-applies).
+    check("appearance in signature",
+          theme.theme_signature(40, 80, 180, 0.9, "dark")[0] == "dark")
+    check("signature auto vs lock differ",
+          theme.theme_signature(40, 80, 180, 0.9, "auto") !=
+          theme.theme_signature(40, 80, 180, 0.9, "dark"))
+
     # apply (stub the OS setters)
     o1, o2 = theme.set_macos_theme, theme.set_windows_accent
     theme.set_macos_theme = lambda *a, **k: None
@@ -223,6 +252,10 @@ def test_day_phase():
     try:
         desc = theme.apply_theme_color(40, 80, 180, 0.2)
         check("apply returns description", isinstance(desc, str) and len(desc) > 0)
+        # A locked-dark apply reports dark (or the platform is unsupported).
+        desc2 = theme.apply_theme_color(40, 80, 180, 0.9, "dark")
+        check("locked-dark apply reports dark",
+              "dark" in desc2.lower() or desc2 == "unsupported platform")
     finally:
         theme.set_macos_theme, theme.set_windows_accent = o1, o2
 
@@ -244,11 +277,16 @@ def test_wallpaper():
             check("png signature", head[:8] == b"\x89PNG\r\n\x1a\n")
             w_, h_ = struct.unpack(">II", head[16:24])
             check("png dimensions", (w_, h_) == (64, 48))
-            # building a second image cleans up the first
-            path2 = wallpaper.build_weather_image(10, 20, 30, 0.3, 0.5,
-                                                  width=64, height=48)
+            # Cleanup keeps the cache small but never deletes the just-built
+            # file (nor the recent ones) — building many leaves a bounded set
+            # that always includes the latest.
+            last = path
+            for i in range(8):
+                last = wallpaper.build_weather_image(10 + i, 20, 30, 0.3, 0.5,
+                                                     width=64, height=48)
             pngs = [f for f in os.listdir(d) if f.endswith(".png")]
-            check("old wallpaper cleaned", len(pngs) == 1 and os.path.basename(path2) in pngs)
+            check("cache stays small", len(pngs) <= 5)
+            check("latest wallpaper kept", os.path.basename(last) in pngs)
         finally:
             wallpaper.CACHE_DIR = orig
 
@@ -475,6 +513,100 @@ def test_sound():
         check("placeholders idempotent", again == [])
 
 
+def test_music():
+    section("music player")
+    import music
+    check("music dir is absolute", os.path.isabs(music.MUSIC_DIR))
+    with tempfile.TemporaryDirectory() as d:
+        for fn in ["b_song.mp3", "a_song.ogg", "tune.wav", "notes.txt", "cover.jpg"]:
+            open(os.path.join(d, fn), "wb").close()
+        tracks = music.list_tracks(d)
+        check("only audio files listed", len(tracks) == 3)
+        check("tracks sorted by name",
+              [os.path.basename(t) for t in tracks] == ["a_song.ogg", "b_song.mp3", "tune.wav"])
+        check("non-audio excluded",
+              not any(t.endswith((".txt", ".jpg")) for t in tracks))
+    # Playback degrades gracefully when audio is unavailable (no crash).
+    o = sound._ensure_mixer
+    sound._ensure_mixer = lambda: False
+    try:
+        check("play returns False without audio", music.play("nope.mp3") is False)
+        check("is_playing False without audio", music.is_playing() is False)
+        music.set_volume(50)   # no-op, must not raise
+    finally:
+        sound._ensure_mixer = o
+
+
+def test_duck_other_audio():
+    section("pause ambient for other audio")
+    import music, audiocheck
+    o_music, o_ext = music.is_playing, audiocheck.external_audio_active
+    music.is_playing = lambda: False
+    audiocheck.external_audio_active = lambda: False
+    try:
+        off = config.default_config()             # feature off by default
+        check("off => never ducks", engine.other_audio_playing(off) is False)
+
+        on = config.default_config()
+        on["pause_when_other_audio"] = True
+        check("on + nothing playing => no duck", engine.other_audio_playing(on) is False)
+
+        music.is_playing = lambda: True
+        check("our music playing => duck", engine.other_audio_playing(on) is True)
+
+        music.is_playing = lambda: False
+        audiocheck.external_audio_active = lambda: True
+        check("external audio => duck", engine.other_audio_playing(on) is True)
+        audiocheck.external_audio_active = lambda: None   # unknown platform
+        check("unknown => no duck", engine.other_audio_playing(on) is False)
+    finally:
+        music.is_playing, audiocheck.external_audio_active = o_music, o_ext
+
+    # Engine stops ambient while other audio plays, resumes after.
+    import audiocheck as ac
+    saved = (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+             sound.play_ambient, sound.stop_sound, sound.set_volume,
+             sound.pick_base, weather.get_weather, ac.external_audio_active,
+             music.is_playing)
+    counts = {"play": 0, "stop": 0}
+    theme.apply_theme_color = lambda *a, **k: "t"
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: True
+    sound.play_ambient = lambda *a, **k: counts.__setitem__("play", counts["play"] + 1)
+    sound.stop_sound = lambda *a, **k: counts.__setitem__("stop", counts["stop"] + 1)
+    sound.set_volume = lambda *a, **k: None
+    sound.pick_base = lambda *a, **k: "x"
+    music.is_playing = lambda: False
+    sr = datetime.datetime.combine(datetime.date.today(), datetime.time(6, 0))
+    ss = datetime.datetime.combine(datetime.date.today(), datetime.time(20, 0))
+    weather.get_weather = lambda *a, **k: {
+        "condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
+        "temperature": 15, "feels_like": 15, "humidity": 50, "uv_index": 3,
+        "uv_index_max": 5, "pressure": 1010, "rain": 0, "precip_chance": 0,
+        "wind_speed": 5, "wind_gust": 8, "wind_dir": 180, "cloud_cover": 10}
+    try:
+        cfg = config.default_config()
+        cfg["manual_time"] = "midday"
+        cfg["pause_when_other_audio"] = True
+        cfg["features"]["wallpaper"] = False
+        eng = engine.Engine()
+        t0 = datetime.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+        ac.external_audio_active = lambda: False
+        eng.step(cfg, None, now=t0)
+        check("ambient plays when nothing else is", counts["play"] == 1)
+        ac.external_audio_active = lambda: True
+        eng.step(cfg, None, now=t0)
+        check("ambient stops when other audio starts", counts["stop"] >= 1)
+        base_plays = counts["play"]
+        ac.external_audio_active = lambda: False
+        eng.step(cfg, None, now=t0)
+        check("ambient resumes after other audio stops", counts["play"] == base_plays + 1)
+    finally:
+        (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+         sound.play_ambient, sound.stop_sound, sound.set_volume,
+         sound.pick_base, weather.get_weather, ac.external_audio_active,
+         music.is_playing) = saved
+
+
 def test_sound_variants_and_modes():
     section("sound variants + random mode")
     import random as _r
@@ -496,6 +628,16 @@ def test_sound_variants_and_modes():
         check("pick_variant returns a real variant", pick in v)
         check("pick_variant falls back to base when none",
               sound.pick_variant("storm", False, d).endswith("storm.wav"))
+        check("pick_base picks a cloud variant",
+              sound.pick_base("cloud", d).endswith("cloud.wav"))
+
+    # --- wind picks the cloud (windy) ambience -----------------------
+    check("calm clear day -> clearday", sound.ambient_base("clear", False, 5) == "clearday")
+    check("windy clear day -> cloud", sound.ambient_base("clear", False, 40) == "cloud")
+    check("windy clear night -> cloud", sound.ambient_base("clear", True, 40) == "cloud")
+    check("wind doesn't override rain", sound.ambient_base("rain", False, 40) == "rain")
+    check("cloudy stays cloud", sound.ambient_base("cloud", False, 0) == "cloud")
+    check("sounds dir is absolute", os.path.isabs(sound.SOUNDS_DIR))
 
     # --- engine random mode: occasional, not continuous --------------
     counts = {"play": 0, "stop": 0}
@@ -648,6 +790,156 @@ def test_webwall():
 # ---------------------------------------------------------
 # animation governor + animated wallpaper
 # ---------------------------------------------------------
+def test_task_recolors_now():
+    section("task changes the background promptly")
+    import datetime as dt
+    o_notify, o_chime = engine.notify, sound.play_chime
+    engine.notify = lambda *a, **k: None
+    sound.play_chime = lambda *a, **k: None
+    try:
+        check("set_weather is a visual change",
+              engine._run_task_action({"action": "set_weather", "action_value": "storm"},
+                                      config.default_config()) is True)
+        check("set_theme is a visual change",
+              engine._run_task_action({"action": "set_theme", "action_value": "255,0,0"},
+                                      config.default_config()) is True)
+        check("notify is not a visual change",
+              engine._run_task_action({"action": "notify"}, {}) is False)
+    finally:
+        engine.notify, sound.play_chime = o_notify, o_chime
+
+    # A due weather task resets the wallpaper/theme guards so the new look
+    # applies at once instead of waiting out the redraw interval.
+    saved = (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+             sound.play_ambient, sound.stop_sound, sound.set_volume,
+             sound.pick_base, weather.get_weather, config.save_config)
+    theme.apply_theme_color = lambda *a, **k: "t"
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: True
+    sound.play_ambient = lambda *a, **k: None
+    sound.stop_sound = lambda *a, **k: None
+    sound.set_volume = lambda *a, **k: None
+    sound.pick_base = lambda *a, **k: "x"
+    config.save_config = lambda *a, **k: True         # keep the disk untouched
+    sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
+    ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
+    weather.get_weather = lambda *a, **k: {
+        "condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
+        "temperature": 15, "feels_like": 15, "humidity": 50, "uv_index": 3,
+        "uv_index_max": 5, "pressure": 1010, "rain": 0, "precip_chance": 0,
+        "wind_speed": 5, "wind_gust": 8, "wind_dir": 180, "cloud_cover": 10}
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            store = tasks_mod.TaskStore(os.path.join(d, "tasks.json"))
+            t0 = dt.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+            store.add_task("Storm", type="once",
+                           datetime_str=(t0 - dt.timedelta(minutes=1)).isoformat(),
+                           action="set_weather", action_value="storm")
+            eng = engine.Engine()
+            eng.step(config.default_config(), store, now=t0)
+            check("wallpaper guard reset after task", eng._last_wall_at is None)
+            check("engine marked transitioning", eng.transitioning is True)
+    finally:
+        (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+         sound.play_ambient, sound.stop_sound, sound.set_volume,
+         sound.pick_base, weather.get_weather, config.save_config) = saved
+
+
+def test_sun_tracking():
+    section("sun tracks the real clock")
+    import datetime as dt
+    captured = {}
+    o = wallpaper.apply_weather_wallpaper
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: captured.update(sun=k.get("sun")) or True
+    try:
+        eng = engine.Engine()
+        now = dt.datetime.now()      # animate_frame reads the real clock
+        eng._last_render = {
+            "r": 80, "g": 160, "b": 255, "brightness": 1.0, "tint": 0.7,
+            "shift": 0.0, "condition": "clear", "temperature": None,
+            "patterns": True, "warmth": True, "sun": 0.99, "multi": True,
+            "phase": None, "sunrise": now - dt.timedelta(hours=1),
+            "sunset": now + dt.timedelta(hours=1)}
+        eng.animate_frame(0.0)
+        # sunrise=now-1h, sunset=now+1h -> live fraction ~0.5, not the stale 0.99.
+        check("animated frame uses live sun (not stale cache)",
+              captured.get("sun") is not None and abs(captured["sun"] - 0.5) < 0.2)
+
+        # Time passing moves the sun west (fixed times, clock-independent).
+        sr = dt.datetime(2026, 6, 1, 6, 0)
+        ss = dt.datetime(2026, 6, 1, 20, 0)
+        s1 = theme.celestial_fraction(None, sr, ss, dt.datetime(2026, 6, 1, 10, 0))
+        s2 = theme.celestial_fraction(None, sr, ss, dt.datetime(2026, 6, 1, 14, 0))
+        check("sun advances with time", s2 > s1)
+    finally:
+        wallpaper.apply_weather_wallpaper = o
+
+
+def test_wallpaper_no_revert():
+    section("wallpaper never deletes the displayed file")
+    with tempfile.TemporaryDirectory() as d:
+        orig, prev = wallpaper.CACHE_DIR, wallpaper._applied_path
+        wallpaper.CACHE_DIR = d
+        wallpaper._applied_path = None
+        try:
+            shown = wallpaper.build_weather_image(40, 80, 180, 0.6, condition="clear",
+                                                  width=48, height=32)
+            wallpaper._applied_path = shown          # the OS is now showing this file
+            for i in range(8):                        # lots of new frames + cleanup
+                wallpaper.build_weather_image(10 + i, 20, 30, 0.3, condition="rain",
+                                              width=48, height=32)
+            check("displayed file survives churn (no revert to default)",
+                  os.path.isfile(shown))
+        finally:
+            wallpaper.CACHE_DIR, wallpaper._applied_path = orig, prev
+
+
+def test_wallpaper_force_refresh():
+    section("wallpaper periodic re-apply (fullscreen catch-up)")
+    import datetime as dt
+    counts = {"wall": 0}
+    saved = (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+             sound.play_ambient, sound.stop_sound, sound.set_volume,
+             sound.pick_variant, weather.get_weather)
+    theme.apply_theme_color = lambda *a, **k: "t"
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: counts.__setitem__("wall", counts["wall"] + 1) or True
+    sound.play_ambient = lambda *a, **k: None
+    sound.stop_sound = lambda *a, **k: None
+    sound.set_volume = lambda *a, **k: None
+    sound.pick_variant = lambda *a, **k: "x"
+    sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
+    ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
+    weather.get_weather = lambda *a, **k: {
+        "condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
+        "temperature": 15, "feels_like": 15, "humidity": 50, "uv_index": 3,
+        "uv_index_max": 5, "pressure": 1010, "rain": 0, "precip_chance": 0,
+        "wind_speed": 5, "wind_gust": 8, "wind_dir": 180, "cloud_cover": 10}
+    try:
+        cfg = config.default_config()
+        cfg["manual_time"] = "midday"
+        cfg["wallpaper_dynamic"] = False
+        cfg["wallpaper_min_interval_seconds"] = 0
+        cfg["wallpaper_refresh_seconds"] = 90
+        cfg["smooth_transitions"] = False
+        t0 = dt.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+        eng = engine.Engine()
+        eng.step(cfg, None, now=t0)
+        eng.step(cfg, None, now=t0)                              # unchanged -> skip
+        check("static drawn once then skipped", counts["wall"] == 1)
+        eng.step(cfg, None, now=t0 + dt.timedelta(seconds=100))  # force refresh
+        check("re-applies after the refresh interval", counts["wall"] == 2)
+
+        counts["wall"] = 0
+        cfg["wallpaper_refresh_seconds"] = 0                     # disable periodic
+        eng2 = engine.Engine()
+        eng2.step(cfg, None, now=t0)
+        eng2.step(cfg, None, now=t0 + dt.timedelta(seconds=1000))
+        check("no re-apply when refresh disabled", counts["wall"] == 1)
+    finally:
+        (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+         sound.play_ambient, sound.stop_sound, sound.set_volume,
+         sound.pick_variant, weather.get_weather) = saved
+
+
 def test_governor():
     section("animation governor")
 
@@ -856,6 +1148,46 @@ def test_gui_helper():
     check("auto color => None", out2["manual_theme_color"] is None)
 
 
+def test_clocks():
+    section("stopwatch + countdown timer")
+    import clocks
+    check("format mm:ss", clocks.format_time(75) == "01:15")
+    check("format h:mm:ss", clocks.format_time(3661) == "1:01:01")
+
+    # Stopwatch counts up only while running.
+    sw = clocks.Stopwatch()
+    for _ in range(5):
+        sw.tick(1)
+    check("paused stopwatch stays at 0", sw.elapsed == 0)
+    sw.toggle()
+    for _ in range(5):
+        sw.tick(1)
+    check("running stopwatch counts up", sw.elapsed == 5)
+    sw.lap()
+    check("lap recorded", sw.laps == [5])
+    sw.reset()
+    check("reset clears stopwatch", sw.elapsed == 0 and sw.laps == [] and not sw.running)
+
+    # Countdown counts down and fires once at zero.
+    ct = clocks.CountdownTimer(minutes=1)      # 60 s
+    check("starts at duration", ct.remaining == 60 and not ct.running)
+    ct.toggle()
+    events = [ct.tick(1) for _ in range(60)]
+    check("fires 'done' exactly once", events.count("done") == 1)
+    check("finished at zero", ct.finished and ct.remaining == 0 and not ct.running)
+    ct.toggle()                                # restart a finished timer
+    check("restart refills", ct.remaining == 60 and ct.running)
+    ct.reset()
+    check("reset stops and refills", ct.remaining == 60 and not ct.running)
+    ct.set_minutes(5)
+    check("set_minutes changes duration", ct.remaining == 300)
+    # A paused countdown doesn't advance.
+    ct2 = clocks.CountdownTimer(2)
+    for _ in range(10):
+        ct2.tick(1)
+    check("paused countdown holds", ct2.remaining == 120)
+
+
 def test_pomodoro():
     section("pomodoro timer")
     import pomodoro as P
@@ -940,13 +1272,20 @@ def main():
     test_wallpaper_patterns()
     test_sound()
     test_sound_variants_and_modes()
+    test_music()
+    test_duck_other_audio()
     test_tasks()
     test_autostart()
     test_webwall()
     test_governor()
+    test_task_recolors_now()
+    test_sun_tracking()
+    test_wallpaper_no_revert()
+    test_wallpaper_force_refresh()
     test_animated_wallpaper()
     test_engine()
     test_pomodoro()
+    test_clocks()
     test_drift()
     test_engine_guards()
     test_gui_helper()

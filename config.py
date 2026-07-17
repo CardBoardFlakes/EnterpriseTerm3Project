@@ -31,6 +31,10 @@ DEFAULTS = {
     "wallpaper_dynamic": True,            # enable the slow colour shift
     "wallpaper_shift_strength": 35,       # percent 0-100 — drift amplitude
     "wallpaper_min_interval_seconds": 45, # never redraw more often than this
+    # Re-apply the wallpaper at least this often even when nothing changed, so
+    # the visible Space catches up after you leave a fullscreen app (macOS only
+    # sets the current Space's desktop). 0 disables the periodic refresh.
+    "wallpaper_refresh_seconds": 90,
     "wallpaper_patterns": True,           # weather-specific patterns (rain, sun, stars…)
     "wallpaper_warmth": True,             # warm the palette when it's cold outside
     # Wallpaper backend:
@@ -52,9 +56,17 @@ DEFAULTS = {
     # single (randomly chosen) clip now and then, roughly every N minutes.
     "sound_mode": "loop",         # loop | random
     "sound_interval_minutes": 5,  # random mode: average gap between plays
+    "music_volume": 60,           # your own music (separate from ambience)
+    # Pause the app's ambient sound while other audio is playing (our own music
+    # player, or — best effort — another app like Spotify / Apple Music).
+    "pause_when_other_audio": False,
 
     # Location used for live weather (Open-Meteo).
     "location": {"lat": -33.8688, "lon": 151.2093, "name": "Sydney"},
+    # Privacy: round the coordinates before they're used/sent, so only a
+    # coarse, city-level position leaves the machine. Decimal places —
+    # 1 ≈ 11 km (city), 2 ≈ 1 km (neighbourhood), 4 ≈ precise.
+    "location_precision": 1,
 
     # Manual overrides. "auto" / None means "use live data".
     "manual_weather": "auto",     # auto|clear|cloud|rain|storm|night
@@ -79,6 +91,9 @@ DEFAULTS = {
     # a high-contrast GUI regardless of the time of day.
     "accessibility_mode": "none", # none|high_contrast
 
+    # Lock the device's Dark/Light appearance. "auto" follows day/night.
+    "appearance_mode": "auto",    # auto|dark|light
+
     # Set the wallpaper on every connected monitor (not just the primary).
     "multi_monitor": True,
 
@@ -89,6 +104,9 @@ DEFAULTS = {
     # is only refetched every weather_refresh (expensive work runs on change).
     "tick_interval_seconds": 30,
     "weather_refresh_seconds": 600,
+
+    # Countdown ("standard") timer — last-used duration in minutes.
+    "countdown_minutes": 10,
 
     # Productivity (Pomodoro) timer durations, in minutes.
     "pomodoro": {
@@ -108,6 +126,9 @@ SOUND_MODES = ["loop", "random"]
 PROFILE_CHOICES = ["none", "focus", "creativity", "relax"]
 ACCESSIBILITY_CHOICES = ["none", "high_contrast"]
 HEMISPHERE_CHOICES = ["auto", "north", "south"]
+APPEARANCE_CHOICES = ["auto", "dark", "light"]
+# Friendly labels for the location-privacy control -> decimal places.
+LOCATION_PRECISION = {"City (~11 km)": 1, "Neighbourhood (~1 km)": 2, "Precise": 4}
 
 # A single, friendly wallpaper-motion choice that hides the backend/animated
 # plumbing from the user:
