@@ -21,7 +21,7 @@ import threading
 import datetime
 
 import tkinter as tk
-from tkinter import ttk, messagebox, colorchooser
+from tkinter import ttk, messagebox, colorchooser, filedialog
 
 import config
 import weather
@@ -30,7 +30,9 @@ import tasks as tasks_mod
 import autostart
 import engine
 import sound
+import music
 import pomodoro
+import clocks
 import webwall
 
 
@@ -55,6 +57,8 @@ def apply_values_to_config(cfg: dict, values: dict) -> dict:
     smode = str(values.get("sound_mode", "loop")).lower()
     cfg["sound_mode"] = smode if smode in config.SOUND_MODES else "loop"
     cfg["sound_interval_minutes"] = max(1, int(values.get("sound_interval_minutes", 5)))
+    cfg["music_volume"] = max(0, min(100, int(values.get("music_volume", 60))))
+    cfg["pause_when_other_audio"] = bool(values.get("pause_when_other_audio", False))
     cfg["tick_interval_seconds"] = max(5, int(values["tick_interval"]))
     cfg["weather_refresh_seconds"] = max(30, int(values["weather_refresh"]))
     cfg["wallpaper_dynamic"] = bool(values["wallpaper_dynamic"])
@@ -65,6 +69,7 @@ def apply_values_to_config(cfg: dict, values: dict) -> dict:
     cfg["wallpaper_animated_fps"] = max(1, int(round(values.get("wallpaper_animated_fps", 6))))
     backend = str(values.get("wallpaper_backend", "png")).lower()
     cfg["wallpaper_backend"] = backend if backend in config.WALLPAPER_BACKENDS else "png"
+    cfg["countdown_minutes"] = max(1, int(values.get("countdown_minutes", 10)))
     cfg["pomodoro"] = {
         "work_min": max(1, int(values["p_work"])),
         "break_min": max(1, int(values["p_break"])),
@@ -89,11 +94,14 @@ def apply_values_to_config(cfg: dict, values: dict) -> dict:
     cfg["active_profile"] = prof if prof in config.PROFILE_CHOICES else "none"
     acc = str(values.get("accessibility_mode", "none")).lower()
     cfg["accessibility_mode"] = acc if acc in config.ACCESSIBILITY_CHOICES else "none"
+    appr = str(values.get("appearance_mode", "auto")).lower()
+    cfg["appearance_mode"] = appr if appr in config.APPEARANCE_CHOICES else "auto"
     hemi = str(values.get("hemisphere", "auto")).lower()
     cfg["hemisphere"] = hemi if hemi in config.HEMISPHERE_CHOICES else "auto"
     cfg["seasonal_themes"] = bool(values.get("seasonal_themes", True))
     cfg["multi_monitor"] = bool(values.get("multi_monitor", True))
     cfg["smooth_transitions"] = bool(values.get("smooth_transitions", True))
+    cfg["location_precision"] = max(0, min(6, int(values.get("location_precision", 1))))
     return cfg
 
 
@@ -104,13 +112,18 @@ def apply_values_to_config(cfg: dict, values: dict) -> dict:
 # The window follows the time of day, like the wallpaper/theme: a light palette
 # by day, a dark one at night, with an accent tinted from the current
 # weather/phase colour. Two base palettes; the accent is filled in per-phase.
+#   BTN/BTN2 = the "ghost" button surface (distinct from cards so buttons read
+#   as buttons) and its hover shade; LINE also outlines them.
 LIGHT = {"BG": "#eef1f7", "CARD": "#ffffff", "INK": "#1f2937",
-         "MUTED": "#6b7280", "FIELD": "#ffffff"}
-DARK  = {"BG": "#161b26", "CARD": "#222a38", "INK": "#e8ebf1",
-         "MUTED": "#9aa4b4", "FIELD": "#2b3444"}
+         "MUTED": "#6b7280", "FIELD": "#ffffff", "LINE": "#d3d9e4",
+         "BTN": "#e7ebf3", "BTN2": "#d9e0ee"}
+DARK  = {"BG": "#151a24", "CARD": "#1f2632", "INK": "#e8ebf1",
+         "MUTED": "#8b97a9", "FIELD": "#2a323f", "LINE": "#3a4453",
+         "BTN": "#333d4c", "BTN2": "#3f4a5b"}
 # Accessibility: black background, white text, yellow accent — maximum contrast.
 HIGH_CONTRAST = {"BG": "#000000", "CARD": "#000000", "INK": "#ffffff",
-                 "MUTED": "#ffd400", "FIELD": "#000000",
+                 "MUTED": "#ffd400", "FIELD": "#000000", "LINE": "#ffe000",
+                 "BTN": "#111111", "BTN2": "#222222",
                  "ACCENT": "#ffe000", "ACCENT_FG": "#000000"}
 
 
@@ -182,6 +195,13 @@ def _task_when_str(t):
         return dts
 
 
+def _locprec_label(decimals):
+    for label, d in config.LOCATION_PRECISION.items():
+        if d == decimals:
+            return label
+    return "City (~11 km)"
+
+
 def _task_does_str(t):
     a, v = t.get("action", ""), t.get("action_value", "")
     return {"notify": "Notify me", "chime": "Play a chime",
@@ -250,12 +270,15 @@ class App:
         self.tree = None
         self.btn_timer = None
         self.lbl_cycles = None
+        self.music_list = None
+        self._music_want = False   # user asked for music -> auto-advance tracks
 
         root.title("Environment Theme Controller")
         root.geometry("600x780")
         root.minsize(560, 700)
         self.status_lbl = None
         self._ui_key = None          # (dark, accent) currently applied
+        self._apply_busy = False     # a preview tick is in flight
         self._scroll_canvases = []   # tk.Canvas backing the scrollable tabs
         self._install_styles()
 
@@ -278,6 +301,9 @@ class App:
         self.v_volume = tk.DoubleVar(value=float(c.get("sound_volume", 25)))
         self.v_soundmode = tk.StringVar(value=c.get("sound_mode", "loop"))
         self.v_soundinterval = tk.IntVar(value=int(c.get("sound_interval_minutes", 5)))
+        self.v_musicvol = tk.IntVar(value=int(c.get("music_volume", 60)))
+        self.v_duck = tk.BooleanVar(value=c.get("pause_when_other_audio", False))
+        self.music_now = tk.StringVar(value="Nothing playing")
         self.v_tick = tk.IntVar(value=int(c.get("tick_interval_seconds", 30)))
         self.v_weatherrefresh = tk.IntVar(value=int(c.get("weather_refresh_seconds", 600)))
         self.v_wpdynamic = tk.BooleanVar(value=c.get("wallpaper_dynamic", True))
@@ -291,9 +317,11 @@ class App:
         self.v_motion = tk.StringVar(value=config.motion_from_config(c))
         self.v_profile = tk.StringVar(value=c.get("active_profile", "none"))
         self.v_access = tk.StringVar(value=c.get("accessibility_mode", "none"))
+        self.v_appearance = tk.StringVar(value=c.get("appearance_mode", "auto"))
         self.v_season = tk.BooleanVar(value=c.get("seasonal_themes", True))
         self.v_hemisphere = tk.StringVar(value=c.get("hemisphere", "auto"))
         self.v_multimon = tk.BooleanVar(value=c.get("multi_monitor", True))
+        self.v_locprec = tk.StringVar(value=_locprec_label(c.get("location_precision", 1)))
         self.v_smooth = tk.BooleanVar(value=c.get("smooth_transitions", True))
         self.v_weather = tk.StringVar(value=c.get("manual_weather", "auto"))
         self.v_time = tk.StringVar(value=c.get("manual_time", "auto"))
@@ -315,10 +343,18 @@ class App:
         self.v_pbreak = tk.IntVar(value=int(p.get("break_min", 5)))
         self.v_plong = tk.IntVar(value=int(p.get("long_break_min", 15)))
         self.v_pcycles = tk.IntVar(value=int(p.get("cycles_before_long", 4)))
-        self.v_timer = tk.StringVar(value="Idle")
+        self.v_timer = tk.StringVar(value="Idle")       # shared big display
         self.pomo = pomodoro.Pomodoro(
             self.v_pwork.get(), self.v_pbreak.get(),
             self.v_plong.get(), self.v_pcycles.get())
+        # Stopwatch + countdown timer, alongside the Pomodoro.
+        self.v_clockmode = tk.StringVar(value="pomodoro")   # pomodoro|timer|stopwatch
+        self.v_timermin = tk.IntVar(value=int(c.get("countdown_minutes", 10)))
+        self.stopwatch = clocks.Stopwatch()
+        self.timer = clocks.CountdownTimer(self.v_timermin.get())
+        self.clock_settings = None      # per-mode settings frame (rebuilt on switch)
+        self.btn_clock_extra = None     # Skip / Lap context button
+        self.lap_box = None             # stopwatch laps list (when shown)
 
     # --- styling / time-of-day UI theme --------------------------------
     def _install_styles(self):
@@ -328,11 +364,19 @@ class App:
         except tk.TclError:
             pass
         self.pal = build_palette(False, (59, 130, 246))   # light + blue to start
-        self._configure_styles()
+        try:
+            self._configure_styles()
+        except tk.TclError as e:
+            print(f"[gui] style setup skipped: {e}")
 
     def _configure_styles(self):
         p, s = self.pal, self.style
-        s.configure(".", background=p["BG"], foreground=p["INK"], font=("Helvetica", 11))
+        # Flatten clam's 3-D bevels — the light top/left edges that read as
+        # clunky white outlines in dark mode. Match bevel colours to the
+        # surface so nothing stands proud.
+        s.configure(".", background=p["BG"], foreground=p["INK"],
+                    font=("Helvetica", 11), bordercolor=p["LINE"],
+                    lightcolor=p["BG"], darkcolor=p["BG"], troughcolor=p["FIELD"])
         s.configure("TFrame", background=p["BG"])
         s.configure("Card.TFrame", background=p["CARD"])
         s.configure("Bar.TLabel", background=p["BG"], foreground=p["MUTED"],
@@ -356,19 +400,24 @@ class App:
         for st in ("Card.TCheckbutton", "Card.TRadiobutton"):
             s.configure(st, background=p["CARD"], foreground=p["INK"])
             s.map(st, background=[("active", p["CARD"])], foreground=[("active", p["INK"])])
-        s.configure("TNotebook", background=p["BG"], borderwidth=0)
-        s.configure("TNotebook.Tab", padding=(16, 8), font=("Helvetica", 11))
+        s.configure("TNotebook", background=p["BG"], borderwidth=0, bordercolor=p["BG"])
+        s.configure("TNotebook.Tab", padding=(16, 8), font=("Helvetica", 11),
+                    borderwidth=0, background=p["BG"], foreground=p["MUTED"])
         s.map("TNotebook.Tab", background=[("selected", p["CARD"])],
               foreground=[("selected", p["INK"])])
+        s.configure("TScrollbar", background=p["FIELD"], troughcolor=p["BG"],
+                    bordercolor=p["BG"], arrowcolor=p["MUTED"])
         # Text fields. Read-only comboboxes ignore plain `configure`, so the
         # readonly/focus/disabled states must be mapped explicitly or the text
-        # is unreadable (dark on dark) in night mode.
+        # is unreadable (dark on dark) in night mode. Flat border = FIELD colour.
         try:
             s.configure("TEntry", fieldbackground=p["FIELD"], foreground=p["INK"],
-                        insertcolor=p["INK"])
+                        insertcolor=p["INK"], bordercolor=p["LINE"],
+                        lightcolor=p["FIELD"], darkcolor=p["FIELD"])
             for st in ("TCombobox", "TSpinbox"):
                 s.configure(st, fieldbackground=p["FIELD"], foreground=p["INK"],
-                            background=p["FIELD"], arrowcolor=p["INK"])
+                            background=p["FIELD"], arrowcolor=p["INK"],
+                            bordercolor=p["LINE"], lightcolor=p["FIELD"], darkcolor=p["FIELD"])
                 s.map(st,
                       fieldbackground=[("readonly", p["FIELD"]), ("disabled", p["FIELD"]),
                                        ("focus", p["FIELD"])],
@@ -388,10 +437,22 @@ class App:
         s.configure("Treeview", background=p["CARD"], fieldbackground=p["CARD"],
                     foreground=p["INK"])
         s.configure("Accent.TButton", background=p["ACCENT"], foreground=p["ACCENT_FG"],
-                    borderwidth=0, focusthickness=0, padding=(14, 7),
+                    borderwidth=0, relief="flat", focusthickness=0, padding=(14, 7),
                     font=("Helvetica", 11, "bold"))
-        s.map("Accent.TButton", background=[("active", p["ACCENT"]), ("pressed", p["ACCENT"])])
-        s.configure("Ghost.TButton", padding=(12, 6))
+        s.map("Accent.TButton",
+              background=[("active", p["ACCENT"]), ("pressed", p["ACCENT"])],
+              relief=[("pressed", "flat"), ("active", "flat")])
+        # Ghost buttons: a subtle filled chip with a hairline border, so they're
+        # clearly buttons (not blended into the card) but stay understated.
+        s.configure("Ghost.TButton", padding=(12, 6), relief="solid", borderwidth=1,
+                    background=p["BTN"], foreground=p["INK"], bordercolor=p["LINE"],
+                    lightcolor=p["BTN"], darkcolor=p["BTN"], focusthickness=0)
+        s.map("Ghost.TButton",
+              background=[("active", p["BTN2"]), ("pressed", p["BTN2"]),
+                          ("disabled", p["CARD"])],
+              foreground=[("active", p["INK"]), ("disabled", p["MUTED"])],
+              bordercolor=[("active", p["ACCENT"])],
+              relief=[("pressed", "solid"), ("active", "solid")])
         # Raw (non-ttk) surfaces.
         try:
             self.root.configure(bg=p["BG"])
@@ -470,8 +531,17 @@ class App:
                 key = ("hc",)
                 pal = dict(HIGH_CONTRAST)
             else:
-                dark = brightness is not None and brightness < 0.5
-                key = (dark, tuple(int(c) for c in rgb))
+                mode = (self.v_appearance.get() or "auto").lower()
+                if mode == "dark":
+                    dark = True
+                elif mode == "light":
+                    dark = False
+                else:
+                    dark = brightness is not None and brightness < 0.5
+                # Key on the *mode* only, not the exact accent — so the (heavy)
+                # ttk restyle runs only on light<->dark<->high-contrast flips,
+                # not on every small colour change. Avoids constant Aqua churn.
+                key = (dark, mode)
                 pal = build_palette(dark, rgb)
             if key == self._ui_key:
                 return
@@ -514,8 +584,10 @@ class App:
         ttk.Button(bar, text="Save", style="Ghost.TButton",
                    command=self.on_save).pack(side="right")
 
-        # Apply the profile / accessibility / hemisphere combos live.
-        for v in (self.v_profile, self.v_access, self.v_hemisphere):
+        # Apply the profile / accessibility / hemisphere / appearance / privacy
+        # combos live.
+        for v in (self.v_profile, self.v_access, self.v_hemisphere,
+                  self.v_appearance, self.v_locprec):
             v.trace_add("write", lambda *_: self._on_override_change())
 
         # Mouse wheel / trackpad scrolling for the whole window (macOS, Windows
@@ -559,12 +631,13 @@ class App:
         ttk.Checkbutton(fc, text="Enable everything (master switch)",
                         style="Card.TCheckbutton", command=self.on_master_toggle,
                         variable=self.v_enabled).pack(anchor="w", pady=(0, 6))
-        for text, var in [("🎨  Dynamic accent theme", self.v_theme),
-                          ("🖼  Weather wallpaper", self.v_wallpaper),
-                          ("🔊  Ambient sound", self.v_sound),
-                          ("✅  Tasks & schedules", self.v_tasks)]:
+        for text, var, cmd in [("🎨  Dynamic accent theme", self.v_theme, None),
+                               ("🖼  Weather wallpaper", self.v_wallpaper, None),
+                               ("🔊  Ambient sound", self.v_sound, self.on_sound_toggle),
+                               ("✅  Tasks & schedules", self.v_tasks, None)]:
+            kw = {"command": cmd} if cmd else {}
             ttk.Checkbutton(fc, text=text, style="Card.TCheckbutton",
-                            variable=var).pack(anchor="w", pady=1)
+                            variable=var, **kw).pack(anchor="w", pady=1)
 
         # Manual theme changer -------------------------------------------
         mcard = _card(body, "Manual theme changer")
@@ -640,6 +713,9 @@ class App:
         ttk.Spinbox(mr, from_=1, to=120, textvariable=self.v_soundinterval,
                     width=5).pack(side="left")
         ttk.Label(mr, text="min (random mode)", style="Muted.TLabel").pack(side="left", padx=4)
+        ttk.Checkbutton(sc, text="Pause ambient when other audio is playing",
+                        style="Card.TCheckbutton", variable=self.v_duck,
+                        command=self._on_override_change).pack(anchor="w", pady=(6, 0))
         ttk.Button(sc, text="🎵  Sound files… (names + open folder)", style="Ghost.TButton",
                    command=self.on_manage_sounds).pack(anchor="w", pady=(8, 0))
         ttk.Label(sc, style="Muted.TLabel", wraplength=460,
@@ -660,6 +736,16 @@ class App:
         ttk.Combobox(hr, textvariable=self.v_hemisphere, state="readonly", width=8,
                      values=config.HEMISPHERE_CHOICES).pack(side="left")
 
+        # Device appearance (Dark/Light lock) ----------------------------
+        dc = _card(body, "Device appearance")
+        dr = ttk.Frame(dc, style="Card.TFrame"); dr.pack(fill="x")
+        ttk.Label(dr, text="Dark / Light", style="Card.TLabel", width=12).pack(side="left")
+        ttk.Combobox(dr, textvariable=self.v_appearance, state="readonly", width=10,
+                     values=config.APPEARANCE_CHOICES).pack(side="left")
+        ttk.Label(dc, style="Muted.TLabel", wraplength=460,
+                  text="auto follows the time of day. dark / light lock the whole "
+                       "device (and this window) to that mode.").pack(anchor="w", pady=(6, 0))
+
         # Accessibility ---------------------------------------------------
         ac = _card(body, "Accessibility")
         ar = ttk.Frame(ac, style="Card.TFrame"); ar.pack(fill="x")
@@ -676,6 +762,14 @@ class App:
         ttk.Spinbox(ir, from_=5, to=3600, textvariable=self.v_tick, width=6).pack(side="left")
         ttk.Label(ir, text="Weather refresh (s)", style="Card.TLabel").pack(side="left", padx=(14, 4))
         ttk.Spinbox(ir, from_=30, to=7200, textvariable=self.v_weatherrefresh, width=7).pack(side="left")
+        lp = ttk.Frame(ec, style="Card.TFrame"); lp.pack(fill="x", pady=(8, 0))
+        ttk.Label(lp, text="Location privacy", style="Card.TLabel", width=14).pack(side="left")
+        ttk.Combobox(lp, textvariable=self.v_locprec, state="readonly", width=18,
+                     values=list(config.LOCATION_PRECISION.keys())).pack(side="left")
+        ttk.Label(ec, style="Muted.TLabel", wraplength=460,
+                  text="Your coordinates are rounded before use — City keeps only a "
+                       "~11 km area, so your exact position never leaves the "
+                       "machine.").pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(ec, text="Set wallpaper on all monitors", style="Card.TCheckbutton",
                         variable=self.v_multimon,
                         command=self._on_override_change).pack(anchor="w", pady=(8, 0))
@@ -786,11 +880,20 @@ class App:
             self._collect()
             config.save_config(self.cfg)
             if self.engine_thread and self.engine_thread.is_alive():
+                # The engine applies on its own (single) thread — just nudge it.
+                # Running a second tick here would fight it (concurrent pygame /
+                # osascript access crashes on macOS).
                 self.engine_thread.wake()
+                self.v_status.set(note)
+                return
+            # Not running: preview via ONE background tick, never overlapping.
+            if self._apply_busy:
+                return
+            self._apply_busy = True
             self.v_status.set(f"{note} — applying…")
             threading.Thread(target=self._tick_bg, daemon=True).start()
         except Exception as e:
-            # Never let a live-apply failure silently swallow the interaction.
+            self._apply_busy = False
             self.v_status.set(f"Apply failed: {e}")
 
     def _tick_bg(self):
@@ -798,6 +901,8 @@ class App:
             self.status_queue.put(engine.tick(self.cfg, self.store))
         except Exception as e:
             self.status_queue.put({"error": str(e)})
+        finally:
+            self._apply_busy = False
 
     # --- Focus & Tasks window ------------------------------------------
     def open_tools(self):
@@ -815,8 +920,9 @@ class App:
 
         nb = ttk.Notebook(win)
         nb.pack(fill="both", expand=True, padx=12, pady=12)
-        nb.add(self._build_timer_frame(nb), text="  Pomodoro Timer  ")
+        nb.add(self._build_timers_frame(nb), text="  Timers  ")
         nb.add(self._build_tasks_frame(nb), text="  To-Do & Schedules  ")
+        nb.add(self._build_music_frame(nb), text="  Music  ")
         self._refresh_tasks()
         self._update_timer_label()
 
@@ -827,35 +933,204 @@ class App:
         self.tree = None
         self.btn_timer = None
         self.lbl_cycles = None
+        self.music_list = None
+        self.clock_settings = None
+        self.btn_clock_extra = None
 
-    def _build_timer_frame(self, parent):
+    def _build_music_frame(self, parent):
         page = ttk.Frame(parent, padding=12)
-        card = _card(page, "Pomodoro")
-        ttk.Label(card, textvariable=self.v_timer, style="Timer.TLabel").pack(pady=(6, 2))
-        self.lbl_cycles = ttk.Label(card, text="Completed work sessions: 0",
-                                    style="Muted.TLabel")
-        self.lbl_cycles.pack()
+        card = _card(page, "Your music")
+        ttk.Label(card, textvariable=self.music_now, style="CardH.TLabel").pack(anchor="w", pady=(0, 6))
+        lb = tk.Listbox(card, height=8, activestyle="none", highlightthickness=0,
+                        borderwidth=0, bg=self.pal["FIELD"], fg=self.pal["INK"],
+                        selectbackground=self.pal["ACCENT"], selectforeground=self.pal["ACCENT_FG"])
+        lb.pack(fill="both", expand=True)
+        lb.bind("<Double-Button-1>", lambda e: self.on_music_play())
+        self.music_list = lb
 
-        ctl = ttk.Frame(card, style="Card.TFrame"); ctl.pack(pady=12)
-        self.btn_timer = ttk.Button(ctl, text="Start", style="Accent.TButton",
-                                    command=self.on_timer_toggle)
-        self.btn_timer.pack(side="left", padx=4)
-        ttk.Button(ctl, text="Skip", style="Ghost.TButton",
-                   command=self.on_timer_skip).pack(side="left", padx=4)
-        ttk.Button(ctl, text="Reset", style="Ghost.TButton",
-                   command=self.on_timer_reset).pack(side="left", padx=4)
+        ctl = ttk.Frame(card, style="Card.TFrame"); ctl.pack(fill="x", pady=(8, 0))
+        ttk.Button(ctl, text="⏮", width=3, style="Ghost.TButton", command=self.on_music_prev).pack(side="left")
+        ttk.Button(ctl, text="▶ Play", style="Accent.TButton", command=self.on_music_play).pack(side="left", padx=4)
+        ttk.Button(ctl, text="⏸", width=3, style="Ghost.TButton", command=self.on_music_pause).pack(side="left")
+        ttk.Button(ctl, text="⏹", width=3, style="Ghost.TButton", command=self.on_music_stop).pack(side="left")
+        ttk.Button(ctl, text="⏭", width=3, style="Ghost.TButton", command=self.on_music_next).pack(side="left", padx=4)
+        self._slider(card, "Music volume", self.v_musicvol)
 
-        durs = _card(page, "Durations (minutes)")
-        for label, var, hi in [("Work", self.v_pwork, 120),
-                               ("Break", self.v_pbreak, 60),
-                               ("Long break", self.v_plong, 120),
-                               ("Cycles → long", self.v_pcycles, 12)]:
-            row = ttk.Frame(durs, style="Card.TFrame"); row.pack(fill="x", pady=2)
-            ttk.Label(row, text=label, style="Card.TLabel", width=14).pack(side="left")
-            ttk.Spinbox(row, from_=1, to=hi, textvariable=var, width=6).pack(side="left")
-        ttk.Button(durs, text="Apply durations", style="Ghost.TButton",
-                   command=self.on_timer_apply_durations).pack(anchor="e", pady=(6, 0))
+        files = ttk.Frame(card, style="Card.TFrame"); files.pack(fill="x", pady=(6, 0))
+        ttk.Button(files, text="Add songs…", style="Ghost.TButton", command=self.on_music_add).pack(side="left")
+        ttk.Button(files, text="Open music folder", style="Ghost.TButton", command=self.on_music_open).pack(side="left", padx=4)
+        ttk.Button(files, text="Refresh", style="Ghost.TButton", command=self.on_music_refresh).pack(side="left")
+        ttk.Label(card, style="Muted.TLabel", wraplength=520,
+                  text="Drop .mp3 / .ogg / .wav files in the music folder (or Add songs…), "
+                       "then Play. Plays alongside the weather ambience.").pack(anchor="w", pady=(6, 0))
+
+        self.v_musicvol.trace_add("write", lambda *_: music.set_volume(self.v_musicvol.get()))
+        self.on_music_refresh()
+        self._update_music_label()
         return page
+
+    # --- music handlers ------------------------------------------------
+    def on_music_refresh(self):
+        if not self._alive(self.music_list):
+            return
+        self.music_list.delete(0, "end")
+        for p in music.list_tracks():
+            self.music_list.insert("end", os.path.basename(p))
+
+    def on_music_play(self):
+        tracks = music.list_tracks()
+        if not tracks:
+            messagebox.showinfo("No music",
+                                "Add some songs first (Add songs…) or drop files in the music folder.")
+            return
+        idx = 0
+        if self._alive(self.music_list) and self.music_list.curselection():
+            idx = self.music_list.curselection()[0]
+        if music.play_list(tracks, idx, self.v_musicvol.get()):
+            self._music_want = True
+        else:
+            messagebox.showwarning("Music", "Couldn't play — is pygame installed? (pip install pygame)")
+        self._update_music_label()
+
+    def on_music_pause(self):
+        music.toggle_pause()
+        self._update_music_label()
+
+    def on_music_stop(self):
+        music.stop()
+        self._music_want = False
+        self._update_music_label()
+
+    def on_music_next(self):
+        music.next_track(self.v_musicvol.get())
+        self._update_music_label()
+
+    def on_music_prev(self):
+        music.prev_track(self.v_musicvol.get())
+        self._update_music_label()
+
+    def on_music_open(self):
+        music.open_folder()
+
+    def on_music_add(self):
+        paths = filedialog.askopenfilenames(
+            title="Add songs",
+            filetypes=[("Audio", "*.mp3 *.ogg *.wav *.flac *.m4a"), ("All files", "*.*")])
+        if not paths:
+            return
+        import shutil
+        music.ensure_dir()
+        added = 0
+        for p in paths:
+            try:
+                shutil.copy(p, music.MUSIC_DIR)
+                added += 1
+            except Exception as e:
+                print(f"[music] copy failed: {e}")
+        self.on_music_refresh()
+        self.v_status.set(f"Added {added} song(s) to the music folder.")
+
+    def _update_music_label(self):
+        cur = music.current()
+        if cur:
+            state = "Paused: " if music.is_paused() else "Playing: "
+            self.music_now.set(state + os.path.basename(cur))
+        else:
+            self.music_now.set("Nothing playing")
+
+    def _build_timers_frame(self, parent):
+        page = ttk.Frame(parent, padding=12)
+
+        # Mode: Pomodoro / countdown Timer / Stopwatch.
+        mode = _card(page, "Timer mode")
+        mrow = ttk.Frame(mode, style="Card.TFrame"); mrow.pack(fill="x")
+        for val, txt in [("pomodoro", "🍅 Pomodoro"), ("timer", "⏲ Timer"),
+                         ("stopwatch", "⏱ Stopwatch")]:
+            ttk.Radiobutton(mrow, text=txt, value=val, variable=self.v_clockmode,
+                            style="Card.TRadiobutton",
+                            command=self._on_clockmode).pack(side="left", padx=(0, 10))
+
+        # Shared big display + controls.
+        disp = _card(page)
+        ttk.Label(disp, textvariable=self.v_timer, style="Timer.TLabel").pack(pady=(6, 2))
+        self.lbl_cycles = ttk.Label(disp, text="", style="Muted.TLabel")
+        self.lbl_cycles.pack()
+        ctl = ttk.Frame(disp, style="Card.TFrame"); ctl.pack(pady=12)
+        self.btn_timer = ttk.Button(ctl, text="Start", style="Accent.TButton",
+                                    command=self.on_clock_toggle)
+        self.btn_timer.pack(side="left", padx=4)
+        self.btn_clock_extra = ttk.Button(ctl, text="Skip", style="Ghost.TButton",
+                                          command=self.on_clock_extra)
+        self.btn_clock_extra.pack(side="left", padx=4)
+        ttk.Button(ctl, text="Reset", style="Ghost.TButton",
+                   command=self.on_clock_reset).pack(side="left", padx=4)
+
+        # Per-mode settings, rebuilt when the mode changes.
+        wrap = _card(page)
+        self.clock_settings = ttk.Frame(wrap, style="Card.TFrame")
+        self.clock_settings.pack(fill="both", expand=True)
+
+        self._on_clockmode()
+        return page
+
+    def _active_clock(self):
+        return {"pomodoro": self.pomo, "timer": self.timer,
+                "stopwatch": self.stopwatch}[self.v_clockmode.get()]
+
+    def _on_clockmode(self):
+        self._rebuild_clock_settings()
+        self._sync_extra_button()
+        self._update_timer_label()
+
+    def _sync_extra_button(self):
+        if not self._alive(self.btn_clock_extra):
+            return
+        m = self.v_clockmode.get()
+        if m == "pomodoro":
+            self.btn_clock_extra.config(text="Skip", state="normal")
+        elif m == "stopwatch":
+            self.btn_clock_extra.config(text="Lap", state="normal")
+        else:
+            self.btn_clock_extra.config(text="Skip", state="disabled")
+
+    def _rebuild_clock_settings(self):
+        if not self._alive(self.clock_settings):
+            return
+        for w in self.clock_settings.winfo_children():
+            w.destroy()
+        self.lap_box = None
+        m = self.v_clockmode.get()
+        c = self.clock_settings
+        if m == "pomodoro":
+            ttk.Label(c, text="Durations (minutes)", style="CardH.TLabel").pack(anchor="w", pady=(0, 4))
+            for label, var, hi in [("Work", self.v_pwork, 120), ("Break", self.v_pbreak, 60),
+                                   ("Long break", self.v_plong, 120), ("Cycles → long", self.v_pcycles, 12)]:
+                row = ttk.Frame(c, style="Card.TFrame"); row.pack(fill="x", pady=2)
+                ttk.Label(row, text=label, style="Card.TLabel", width=14).pack(side="left")
+                ttk.Spinbox(row, from_=1, to=hi, textvariable=var, width=6).pack(side="left")
+            ttk.Button(c, text="Apply durations", style="Ghost.TButton",
+                       command=self.on_timer_apply_durations).pack(anchor="e", pady=(6, 0))
+        elif m == "timer":
+            row = ttk.Frame(c, style="Card.TFrame"); row.pack(fill="x", pady=2)
+            ttk.Label(row, text="Minutes", style="Card.TLabel", width=14).pack(side="left")
+            ttk.Spinbox(row, from_=1, to=600, textvariable=self.v_timermin, width=6).pack(side="left")
+            ttk.Button(row, text="Set", style="Ghost.TButton",
+                       command=self.on_timer_set).pack(side="left", padx=6)
+            ttk.Label(c, style="Muted.TLabel",
+                      text="Counts down and chimes when it reaches zero.").pack(anchor="w", pady=(4, 0))
+        else:  # stopwatch
+            ttk.Label(c, text="Laps", style="CardH.TLabel").pack(anchor="w")
+            self.lap_box = tk.Listbox(c, height=5, activestyle="none", highlightthickness=0,
+                                      borderwidth=0, bg=self.pal["FIELD"], fg=self.pal["INK"])
+            self.lap_box.pack(fill="both", expand=True)
+            self._refresh_laps()
+
+    def _refresh_laps(self):
+        if not self._alive(self.lap_box):
+            return
+        self.lap_box.delete(0, "end")
+        for i, t in enumerate(self.stopwatch.laps, 1):
+            self.lap_box.insert("end", f"Lap {i}:   {clocks.format_time(t)}")
 
     def _build_tasks_frame(self, parent):
         page = ttk.Frame(parent, padding=12)
@@ -956,19 +1231,31 @@ class App:
         else:
             self.date_row.pack_forget()
 
-    # --- timer ---------------------------------------------------------
+    # --- timers (pomodoro / countdown / stopwatch) ---------------------
     def _update_timer_label(self):
-        self.v_timer.set(self.pomo.label())
+        active = self._active_clock()
+        self.v_timer.set(active.label())
         if self._alive(self.lbl_cycles):
-            self.lbl_cycles.config(
-                text=f"Completed work sessions: {self.pomo.completed_work}")
+            m = self.v_clockmode.get()
+            if m == "pomodoro":
+                self.lbl_cycles.config(
+                    text=f"Completed work sessions: {self.pomo.completed_work}")
+            elif m == "timer":
+                self.lbl_cycles.config(
+                    text="Finished" if self.timer.finished
+                    else ("Running" if self.timer.running else "Paused"))
+            else:
+                self.lbl_cycles.config(
+                    text=f"{len(self.stopwatch.laps)} lap(s)" if self.stopwatch.laps
+                    else "Stopwatch")
         if self._alive(self.btn_timer):
-            self.btn_timer.config(text="Pause" if self.pomo.running else "Start")
+            self.btn_timer.config(text="Pause" if active.running else "Start")
 
     def _timer_loop(self):
+        # Tick all three so a running clock keeps going while another is shown.
         ev = self.pomo.tick(1) if self.pomo.running else None
         if ev:
-            event, nxt = ev
+            event, _nxt = ev
             msg = ("Work done — time for a break."
                    if event == "work_complete" else "Break over — back to work.")
             try:
@@ -976,20 +1263,46 @@ class App:
             except Exception:
                 pass
             engine.notify("Pomodoro", msg)
-            self.v_status.set(f"Timer: {msg}")
+            self.v_status.set(f"Pomodoro: {msg}")
+        self.stopwatch.tick(1)
+        if self.timer.tick(1) == "done":
+            try:
+                sound.play_chime()
+            except Exception:
+                pass
+            engine.notify("Timer", "Timer finished.")
+            self.v_status.set("Timer finished.")
         self._update_timer_label()
+        # Auto-advance music when a track finishes.
+        if (self._music_want and music.has_playlist()
+                and not music.is_playing() and not music.is_paused()):
+            music.next_track(self.v_musicvol.get())
+            self._update_music_label()
         self.root.after(1000, self._timer_loop)
 
-    def on_timer_toggle(self):
-        self.pomo.toggle()
+    def on_clock_toggle(self):
+        self._active_clock().toggle()
         self._update_timer_label()
 
-    def on_timer_skip(self):
-        self.pomo.skip()
+    def on_clock_reset(self):
+        self._active_clock().reset()
+        if self.v_clockmode.get() == "stopwatch":
+            self._refresh_laps()
         self._update_timer_label()
 
-    def on_timer_reset(self):
-        self.pomo.reset()
+    def on_clock_extra(self):
+        m = self.v_clockmode.get()
+        if m == "pomodoro":
+            self.pomo.skip()
+        elif m == "stopwatch":
+            self.stopwatch.lap()
+            self._refresh_laps()
+        self._update_timer_label()
+
+    def on_timer_set(self):
+        self.timer.set_minutes(self.v_timermin.get())
+        self._collect()
+        config.save_config(self.cfg)
         self._update_timer_label()
 
     def on_timer_apply_durations(self):
@@ -1067,6 +1380,8 @@ class App:
             "volume": self.v_volume.get(),
             "sound_mode": self.v_soundmode.get(),
             "sound_interval_minutes": self.v_soundinterval.get(),
+            "music_volume": self.v_musicvol.get(),
+            "pause_when_other_audio": self.v_duck.get(),
             "tick_interval": self.v_tick.get(),
             "weather_refresh": self.v_weatherrefresh.get(),
             "wallpaper_dynamic": self.v_wpdynamic.get(),
@@ -1080,16 +1395,19 @@ class App:
             "p_break": self.v_pbreak.get(),
             "p_long": self.v_plong.get(),
             "p_cycles": self.v_pcycles.get(),
+            "countdown_minutes": self.v_timermin.get(),
             "manual_weather": self.v_weather.get(),
             "manual_time": self.v_time.get(),
             "manual_theme_color": self.v_color.get(),
             "run_at_login": self.v_runlogin.get(),
             "active_profile": self.v_profile.get(),
             "accessibility_mode": self.v_access.get(),
+            "appearance_mode": self.v_appearance.get(),
             "seasonal_themes": self.v_season.get(),
             "hemisphere": self.v_hemisphere.get(),
             "multi_monitor": self.v_multimon.get(),
             "smooth_transitions": self.v_smooth.get(),
+            "location_precision": config.LOCATION_PRECISION.get(self.v_locprec.get(), 1),
         })
 
     def on_master_toggle(self):
@@ -1116,6 +1434,21 @@ class App:
             self.v_status.set("Disabled — engine idle (wallpaper/accent left as-is).")
         else:
             self.v_status.set("Disabled.")
+
+    def on_sound_toggle(self):
+        """Turn ambient sound on/off *now* — unticking stops it immediately."""
+        self._collect()
+        config.save_config(self.cfg)
+        if not self.v_sound.get():
+            try:
+                sound.stop_sound()          # kill the looping clip right away
+            except Exception:
+                pass
+            self.v_status.set("Ambient sound off.")
+        else:
+            self.v_status.set("Ambient sound on.")
+        if self.engine_thread and self.engine_thread.is_alive():
+            self.engine_thread.wake()
 
     def on_save(self):
         self._collect()

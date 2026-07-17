@@ -85,6 +85,7 @@ Used for live weather (Open-Meteo). There's no GUI field yet — edit this by ha
 | `location.lat` | float | `-33.8688` | Latitude. |
 | `location.lon` | float | `151.2093` | Longitude. |
 | `location.name` | string | `"Sydney"` | Label shown on the weather card. |
+| `location_precision` | int (0–6) | `1` | Decimal places the coordinates are rounded to before use/sending. `1` ≈ 11 km (city), `2` ≈ 1 km, `4` ≈ precise. Keeps only a coarse, city-level position — set in the GUI via **Engine → Location privacy**. |
 
 Find your coordinates from any maps app. Example (London):
 
@@ -102,6 +103,7 @@ Find your coordinates from any maps app. Example (London):
 | `seasonal_themes` | bool | `true` | Apply a seasonal wash to the palette. |
 | `hemisphere` | `auto`/`north`/`south` | `"auto"` | Season calendar; `auto` uses the location latitude. |
 | `accessibility_mode` | `none`/`high_contrast` | `"none"` | `high_contrast` forces bold colours + a high-contrast window. |
+| `appearance_mode` | `auto`/`dark`/`light` | `"auto"` | Lock the device Dark/Light appearance; `auto` follows the time of day. |
 | `multi_monitor` | bool | `true` | Set the wallpaper on every connected display. |
 
 ## Manual overrides

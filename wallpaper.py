@@ -16,6 +16,11 @@ import subprocess
 
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".environment_theme_controller")
 
+# Path of the wallpaper the OS is currently displaying (last successful set).
+# Never deleted by cleanup, so the desktop can't be left pointing at a file we
+# removed — which would make it revert to the OS default background.
+_applied_path = None
+
 
 # ---------------------------------------------------------
 # Colour helpers
@@ -424,18 +429,37 @@ def build_weather_image(r, g, b, brightness, tint_strength=0.4,
     return path
 
 
-def _cleanup_old(keep=None):
-    """Remove previously generated wallpapers so the cache dir stays small."""
+def _cleanup_old(keep=None, keep_recent=3):
+    """
+    Remove old generated wallpapers so the cache dir stays small — but never
+    the file just built (*keep*), the file the OS is currently showing
+    (*_applied_path*), or the few most-recent frames. This avoids deleting the
+    image the desktop points at (which would revert it to the default).
+    """
     try:
-        for f in os.listdir(CACHE_DIR):
-            full = os.path.join(CACHE_DIR, f)
-            if f.startswith("wallpaper_") and f.endswith(".png") and full != keep:
-                try:
-                    os.remove(full)
-                except OSError:
-                    pass
+        paths = [os.path.join(CACHE_DIR, f) for f in os.listdir(CACHE_DIR)
+                 if f.startswith("wallpaper_") and f.endswith(".png")]
     except OSError:
-        pass
+        return
+
+    def _mtime(p):
+        try:
+            return os.path.getmtime(p)
+        except OSError:
+            return 0.0
+
+    paths.sort(key=_mtime, reverse=True)
+    protected = set(paths[:max(0, keep_recent)])
+    if keep:
+        protected.add(keep)
+    if _applied_path:
+        protected.add(_applied_path)
+    for p in paths:
+        if p not in protected:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------
@@ -448,13 +472,17 @@ def set_wallpaper(path: str, multi=True) -> bool:
     *multi*: when True, set it on every connected monitor; otherwise just the
     main one.
     """
+    global _applied_path
     if sys.platform == "darwin":
-        return _set_wallpaper_macos(path, multi)
+        ok = _set_wallpaper_macos(path, multi)
     elif sys.platform == "win32":
-        return _set_wallpaper_windows(path)
+        ok = _set_wallpaper_windows(path)
     else:
         print(f"[wallpaper] Not supported on {sys.platform!r} — skipping.")
         return False
+    if ok:
+        _applied_path = path
+    return ok
 
 
 def _set_wallpaper_macos(path: str, multi=True) -> bool:

@@ -61,6 +61,17 @@ a clip only every few minutes.
   still generated); use the **Ultra** web backend with an engine instead.
 - Check the console for `[wallpaper] Failed to set …`.
 
+### It only changes when I'm *not* in a fullscreen app (macOS)
+
+macOS gives each **Space** its own desktop, and a fullscreen app sits on its own
+Space. The system API only sets the *current* Space's wallpaper, so a change made
+while you're in a fullscreen app never reaches the normal desktop. The app works
+around this by **re-applying the wallpaper periodically** (default every ~90s,
+`wallpaper_refresh_seconds` in `config.json`), so the desktop catches up shortly
+after you leave the fullscreen app. Lower that value for a faster catch-up, or
+`0` to disable it. (Tip: in **System Settings → Desktop & Dock**, turning off
+"Displays have separate Spaces" makes wallpaper behave more consistently.)
+
 ---
 
 ## The accent colour didn't change (macOS)

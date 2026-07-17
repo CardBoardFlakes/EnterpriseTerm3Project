@@ -36,7 +36,7 @@ When **Weather patterns** is on, a light overlay is drawn per condition:
 
 | Condition | Pattern |
 |---|---|
-| Clear (day) | The sun **rises in the east, arcs overhead, and sets in the west** with the real time of day; its glow is warm orange near the horizons, white at noon |
+| Clear (day) | The sun **rises in the east, arcs overhead, and sets in the west**, tracking the real sun — it creeps gently across the day (glides smoothly in *Smooth* motion); its glow is warm orange near the horizons, white at noon |
 | Cloudy | Warm cream cloud puffs over a veiled-sun glow (never a bleak flat grey) |
 | Rain | Light streaks trickling downward |
 | Storm | Heavier slanted rain + the occasional lightning bolt |
