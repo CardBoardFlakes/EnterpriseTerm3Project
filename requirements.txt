@@ -12,3 +12,9 @@ pygame>=2.5         # ambient sound playback
 #
 # Pillow is NOT required — wallpaper images are generated with the standard
 # library. No native build tools needed.
+
+# --- Dev tools (optional) ---
+# Linting is done with Ruff. Install and run:
+#   pip install ruff
+#   python3 -m ruff check .
+# ruff>=0.15        # uncomment to pin as a dev dependency

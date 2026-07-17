@@ -64,7 +64,7 @@ def _run_task_action(task: dict, cfg: dict) -> bool:
     title = task.get("title", "Task")
 
     if action == "notify":
-        notify("Environment Theme Controller", title)
+        notify("Flow", title)
     elif action == "chime":
         sound.play_chime()
     elif action == "set_weather":

@@ -78,16 +78,18 @@ See the [sound guide](SOUNDS.md) for file names and variants.
 
 ## Location
 
-Used for live weather (Open-Meteo). There's no GUI field yet — edit this by hand.
+Used for live weather (Open-Meteo). Pick your **City** from the dropdown in
+Appearance → Engine — it fills in the coordinates for you, and only that
+city-level position is ever used.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `location.lat` | float | `-33.8688` | Latitude. |
-| `location.lon` | float | `151.2093` | Longitude. |
+| `location.lat` | float | `-33.8688` | Latitude (set by the city picker). |
+| `location.lon` | float | `151.2093` | Longitude (set by the city picker). |
 | `location.name` | string | `"Sydney"` | Label shown on the weather card. |
-| `location_precision` | int (0–6) | `1` | Decimal places the coordinates are rounded to before use/sending. `1` ≈ 11 km (city), `2` ≈ 1 km, `4` ≈ precise. Keeps only a coarse, city-level position — set in the GUI via **Engine → Location privacy**. |
 
-Find your coordinates from any maps app. Example (London):
+To use a city that isn't in the list, set these by hand from any maps app.
+Example (London):
 
 ```json
 "location": { "lat": 51.5072, "lon": -0.1276, "name": "London" }

@@ -1,5 +1,5 @@
 """
-Settings GUI for the Environment Theme Controller.
+Settings GUI for the Flow.
 
 Layout:
   * Main window
@@ -101,7 +101,10 @@ def apply_values_to_config(cfg: dict, values: dict) -> dict:
     cfg["seasonal_themes"] = bool(values.get("seasonal_themes", True))
     cfg["multi_monitor"] = bool(values.get("multi_monitor", True))
     cfg["smooth_transitions"] = bool(values.get("smooth_transitions", True))
-    cfg["location_precision"] = max(0, min(6, int(values.get("location_precision", 1))))
+    # City picker sets the location; an unknown label leaves it unchanged.
+    city_loc = config.location_for_city(values.get("city", ""))
+    if city_loc is not None:
+        cfg["location"] = city_loc
     return cfg
 
 
@@ -195,13 +198,6 @@ def _task_when_str(t):
         return dts
 
 
-def _locprec_label(decimals):
-    for label, d in config.LOCATION_PRECISION.items():
-        if d == decimals:
-            return label
-    return "City (~11 km)"
-
-
 def _task_does_str(t):
     a, v = t.get("action", ""), t.get("action_value", "")
     return {"notify": "Notify me", "chime": "Play a chime",
@@ -273,7 +269,7 @@ class App:
         self.music_list = None
         self._music_want = False   # user asked for music -> auto-advance tracks
 
-        root.title("Environment Theme Controller")
+        root.title("Flow")
         root.geometry("600x780")
         root.minsize(560, 700)
         self.status_lbl = None
@@ -321,7 +317,7 @@ class App:
         self.v_season = tk.BooleanVar(value=c.get("seasonal_themes", True))
         self.v_hemisphere = tk.StringVar(value=c.get("hemisphere", "auto"))
         self.v_multimon = tk.BooleanVar(value=c.get("multi_monitor", True))
-        self.v_locprec = tk.StringVar(value=_locprec_label(c.get("location_precision", 1)))
+        self.v_city = tk.StringVar(value=config.city_label_for(c))
         self.v_smooth = tk.BooleanVar(value=c.get("smooth_transitions", True))
         self.v_weather = tk.StringVar(value=c.get("manual_weather", "auto"))
         self.v_time = tk.StringVar(value=c.get("manual_time", "auto"))
@@ -563,7 +559,7 @@ class App:
     def _build_ui(self):
         header = ttk.Frame(self.root, padding=(14, 12, 14, 6))
         header.pack(fill="x")
-        ttk.Label(header, text="Environment Theme", style="H1.TLabel").pack(side="left")
+        ttk.Label(header, text="Flow", style="H1.TLabel").pack(side="left")
         # One button runs the show: Start applies immediately and keeps the
         # engine live; Stop halts it. (No separate "Apply Now" to confuse.)
         self.btn_engine = ttk.Button(header, text="▶  Start", style="Accent.TButton",
@@ -587,7 +583,7 @@ class App:
         # Apply the profile / accessibility / hemisphere / appearance / privacy
         # combos live.
         for v in (self.v_profile, self.v_access, self.v_hemisphere,
-                  self.v_appearance, self.v_locprec):
+                  self.v_appearance):
             v.trace_add("write", lambda *_: self._on_override_change())
 
         # Mouse wheel / trackpad scrolling for the whole window (macOS, Windows
@@ -762,14 +758,16 @@ class App:
         ttk.Spinbox(ir, from_=5, to=3600, textvariable=self.v_tick, width=6).pack(side="left")
         ttk.Label(ir, text="Weather refresh (s)", style="Card.TLabel").pack(side="left", padx=(14, 4))
         ttk.Spinbox(ir, from_=30, to=7200, textvariable=self.v_weatherrefresh, width=7).pack(side="left")
-        lp = ttk.Frame(ec, style="Card.TFrame"); lp.pack(fill="x", pady=(8, 0))
-        ttk.Label(lp, text="Location privacy", style="Card.TLabel", width=14).pack(side="left")
-        ttk.Combobox(lp, textvariable=self.v_locprec, state="readonly", width=18,
-                     values=list(config.LOCATION_PRECISION.keys())).pack(side="left")
+        cr = ttk.Frame(ec, style="Card.TFrame"); cr.pack(fill="x", pady=(8, 0))
+        ttk.Label(cr, text="City", style="Card.TLabel", width=14).pack(side="left")
+        city_cb = ttk.Combobox(cr, textvariable=self.v_city, state="readonly", width=24,
+                               values=config.city_choices())
+        city_cb.pack(side="left")
+        city_cb.bind("<<ComboboxSelected>>", lambda e: self._on_city_change())
         ttk.Label(ec, style="Muted.TLabel", wraplength=460,
-                  text="Your coordinates are rounded before use — City keeps only a "
-                       "~11 km area, so your exact position never leaves the "
-                       "machine.").pack(anchor="w", pady=(4, 0))
+                  text="Pick your city for live weather — no need to edit "
+                       "coordinates. Only this city-level location is ever "
+                       "used.").pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(ec, text="Set wallpaper on all monitors", style="Card.TCheckbutton",
                         variable=self.v_multimon,
                         command=self._on_override_change).pack(anchor="w", pady=(8, 0))
@@ -868,6 +866,11 @@ class App:
     def _on_override_change(self):
         """A manual override changed — apply it right away."""
         self._apply_live("Override updated")
+
+    def _on_city_change(self):
+        """City picked — save the new location, re-fetch weather, and apply."""
+        self._apply_live("City updated")
+        self.refresh_weather()
 
     def _apply_live(self, note):
         """
@@ -1412,7 +1415,7 @@ class App:
             "hemisphere": self.v_hemisphere.get(),
             "multi_monitor": self.v_multimon.get(),
             "smooth_transitions": self.v_smooth.get(),
-            "location_precision": config.LOCATION_PRECISION.get(self.v_locprec.get(), 1),
+            "city": self.v_city.get(),
         })
 
     def on_master_toggle(self):

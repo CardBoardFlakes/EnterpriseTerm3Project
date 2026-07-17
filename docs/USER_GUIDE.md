@@ -1,6 +1,6 @@
 # User Guide
 
-A full walkthrough of the Environment Theme Controller. New here? Read this top
+A full walkthrough of the Flow. New here? Read this top
 to bottom once — it takes five minutes.
 
 - [Installing & first launch](#installing--first-launch)
@@ -170,5 +170,6 @@ run-at-login launcher uses.
 | Generated wallpaper + web assets | `~/.environment_theme_controller/` |
 | Ambient sound files | `sounds/` (in the project folder) |
 
-To change your **location** for live weather, edit `config.json` (there's no GUI
-field yet) — see the [Configuration reference](CONFIGURATION.md#location).
+To change your **location** for live weather, pick your **City** from the
+dropdown in Appearance → Engine. For a city that isn't listed, edit `location`
+in `config.json` — see the [Configuration reference](CONFIGURATION.md#location).
