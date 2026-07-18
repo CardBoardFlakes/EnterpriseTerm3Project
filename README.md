@@ -1,4 +1,4 @@
-# Environment Theme Controller
+# Flow
 
 A cross-platform (macOS + Windows) desktop app that makes your computer reflect
 the weather and time of day outside — accent colour, desktop wallpaper, and
@@ -145,7 +145,16 @@ wallpaper assets in `~/.environment_theme_controller/`.
 python tests.py
 ```
 
-A headless suite (**301 checks**) covering config + friendly-motion mapping,
+### Linting
+
+Code is linted with [Ruff](https://docs.astral.sh/ruff/) (config in `ruff.toml`):
+
+```bash
+pip install ruff
+python3 -m ruff check .      # 0 issues
+```
+
+A headless suite (**313 checks**) covering config + friendly-motion mapping,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
 / warmth, the

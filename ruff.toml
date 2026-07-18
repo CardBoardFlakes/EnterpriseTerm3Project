@@ -1,0 +1,18 @@
+# Ruff config for the Environment Theme Controller.
+#
+# Run:  python3 -m ruff check .
+#
+# Uses Ruff's default rule set (pyflakes + core pycodestyle), which catches the
+# genuinely useful problems (unused imports/names, undefined names, syntax).
+# Two purely-stylistic rules are turned off because they flag idioms this
+# codebase uses deliberately and readably.
+
+line-length = 100
+target-version = "py38"
+
+[lint]
+# E702  "x = Frame(...); x.pack(...)" — a compact one-widget-per-row idiom used
+#        throughout gui.py; splitting each into two lines only adds noise.
+# E731  short inline `lambda` bindings (e.g. a one-line label formatter / Tk
+#        trace callback) — clear enough in context.
+ignore = ["E702", "E731"]

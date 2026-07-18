@@ -1,5 +1,5 @@
 """
-Headless test suite for the Environment Theme Controller.
+Headless test suite for the Flow.
 
 Covers config, weather override, theme computation, wallpaper PNG
 generation, sound selection/synthesis, task scheduling, autostart command
@@ -68,6 +68,12 @@ def test_config():
         cfg2["enabled"] = True
         check("feature on when master on",
               config.feature_enabled(cfg2, "dynamic_theme") is True)
+        # Retired keys are stripped from old config files on load.
+        import json as _json
+        with open(p, "w") as f:
+            _json.dump({"enabled": True, "location_precision": 2}, f)
+        cfg3 = config.load_config(p)
+        check("retired location_precision dropped", "location_precision" not in cfg3)
 
 
 # ---------------------------------------------------------
@@ -111,22 +117,18 @@ def test_weather():
     check("MEASUREMENT_KEYS covers uv+humidity",
           "uv_index" in weather.MEASUREMENT_KEYS and "humidity" in weather.MEASUREMENT_KEYS)
 
-    # Location privacy: coordinates are rounded before use.
+    # Location: the chosen city's coordinates are used as-is (city-level).
     cfg = config.default_config()
     cfg["location"] = {"lat": -33.8688, "lon": 151.2093, "name": "Sydney"}
-    cfg["location_precision"] = 1
-    check("city precision rounds to ~11km", weather.rounded_location(cfg) == (-33.9, 151.2))
-    cfg["location_precision"] = 2
-    check("neighbourhood precision", weather.rounded_location(cfg) == (-33.87, 151.21))
-    cfg["location_precision"] = 4
-    check("precise keeps 4 dp", weather.rounded_location(cfg) == (-33.8688, 151.2093))
-    # get_live_weather sends only the rounded coordinates.
+    check("location_coords reads config", weather.location_coords(cfg) == (-33.8688, 151.2093))
+    check("location_coords falls back on bad data",
+          weather.location_coords({"location": {"lat": "x"}}) == (weather.LAT, weather.LON))
+    # get_live_weather sends the city coordinates.
     seen = {}
     weather.get_weather = lambda lat, lon: (seen.update(lat=lat, lon=lon) or {
         "condition": "clear", "sunrise": None, "sunset": None, "is_day": True})
-    cfg["location_precision"] = 1
     weather.get_live_weather(cfg)
-    check("live fetch uses rounded coords", seen == {"lat": -33.9, "lon": 151.2})
+    check("live fetch uses city coords", seen == {"lat": -33.8688, "lon": 151.2093})
 
     # Offline fallback: force live fetch to fail.
     weather.get_weather = lambda *a, **k: (_ for _ in ()).throw(ConnectionError("no net"))
@@ -166,9 +168,13 @@ def test_day_phase():
         return dt.datetime.combine(dt.date.today(), dt.time(h, m))
 
     expected = {3: "night", 6: "sunrise", 8: "morning", 13: "midday",
-                17: "afternoon", 20: "sunset", 21: "dusk", 23: "night"}
+                17: "afternoon", 20: "sunset", 21: "night", 23: "night"}
     for h, want in expected.items():
         check(f"{h:02d}:00 -> {want}", theme.compute_day_phase(sr, ss, at(h)) == want)
+    # Night arrives soon after sunset: sunset(20:00) -> dusk ~20:30 -> night ~20:45.
+    check("20:30 -> dusk", theme.compute_day_phase(sr, ss, at(20, 30)) == "dusk")
+    check("20:50 -> night (soon after sunset)",
+          theme.compute_day_phase(sr, ss, at(20, 50)) == "night")
 
     # Brightness ordering across phases.
     check("midday is brightest", theme.phase_light("midday")[0] == 1.0)
@@ -539,7 +545,8 @@ def test_music():
 
 def test_duck_other_audio():
     section("pause ambient for other audio")
-    import music, audiocheck
+    import music
+    import audiocheck
     o_music, o_ext = music.is_playing, audiocheck.external_audio_active
     music.is_playing = lambda: False
     audiocheck.external_audio_active = lambda: False
@@ -790,6 +797,99 @@ def test_webwall():
 # ---------------------------------------------------------
 # animation governor + animated wallpaper
 # ---------------------------------------------------------
+def test_bugfixes():
+    section("regression tests (fixed bugs)")
+    import datetime as dt
+    sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
+    ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
+    saved = (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+             sound.play_ambient, sound.stop_sound, sound.set_volume,
+             sound.pick_base, weather.get_weather)
+    counts = {"theme": 0, "wall": 0, "stop": 0}
+    theme.apply_theme_color = lambda *a, **k: counts.__setitem__("theme", counts["theme"] + 1) or "t"
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: counts.__setitem__("wall", counts["wall"] + 1) or True
+    sound.play_ambient = lambda *a, **k: None
+    sound.stop_sound = lambda *a, **k: counts.__setitem__("stop", counts["stop"] + 1)
+    sound.set_volume = lambda *a, **k: None
+    sound.pick_base = lambda *a, **k: "x"
+    weather.get_weather = lambda *a, **k: {
+        "condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
+        "temperature": 15, "feels_like": 15, "humidity": 50, "uv_index": 3,
+        "uv_index_max": 5, "pressure": 1010, "rain": 0, "precip_chance": 0,
+        "wind_speed": 5, "wind_gust": 8, "wind_dir": 180, "cloud_cover": 10}
+
+    def at(h):
+        return dt.datetime.combine(dt.date.today(), dt.time(h, 0))
+
+    try:
+        # BUG: day/night was derived from the real clock, not the injected
+        # `now` — so the engine was non-deterministic. It must follow `now`.
+        eng = engine.Engine()
+        cfg = config.default_config()
+        s_noon = eng.step(cfg, None, now=at(12))
+        s_night = eng.step(cfg, None, now=at(23))
+        check("day at noon (injected now)", s_noon["is_night"] is False)
+        check("night at 23:00 (injected now)", s_night["is_night"] is True)
+
+        # BUG: a pinned manual accent kept overriding the weather theme; clearing
+        # it (None) must let the colour follow the weather again.
+        cfg2 = config.default_config()
+        cfg2["manual_weather"] = "clear"
+        cfg2["manual_theme_color"] = [10, 20, 30]
+        st = engine.tick(cfg2, None)
+        check("pinned accent is used", st["color"] == [10, 20, 30]
+              and st["color_source"] == "manual")
+        cfg2["manual_theme_color"] = None
+        st2 = engine.tick(cfg2, None)
+        check("unpinned accent follows the weather",
+              st2["color"] != [10, 20, 30] and st2["color_source"] == "computed")
+
+        # BUG: the master switch "did nothing". Off => engine applies nothing
+        # and silences sound.
+        counts.update(theme=0, wall=0, stop=0)
+        cfg3 = config.default_config()
+        cfg3["enabled"] = False
+        eng3 = engine.Engine()
+        eng3._sound_on = True
+        st3 = eng3.step(cfg3, None, now=at(12))
+        check("master off => not enabled", st3["enabled"] is False and "note" in st3)
+        check("master off applies no theme/wallpaper", counts["theme"] == 0 and counts["wall"] == 0)
+        check("master off stops sound", counts["stop"] >= 1)
+
+        # BUG: ambient wouldn't stop when the feature was turned off.
+        counts.update(theme=0, wall=0, stop=0)
+        cfg4 = config.default_config()
+        cfg4["features"]["ambient_sound"] = False
+        eng4 = engine.Engine()
+        eng4._sound_on = True
+        eng4.step(cfg4, None, now=at(12))
+        check("ambient off stops the sound", counts["stop"] >= 1)
+
+        # BUG: a picked accent didn't apply while the engine ran, because the
+        # change-guards suppressed it. Dropping _last_theme/_last_wall_at (what
+        # the GUI now does on a manual change) must force a re-apply even when
+        # the theme signature is unchanged.
+        counts.update(theme=0, wall=0)
+        cfg5 = config.default_config()
+        cfg5["manual_time"] = "midday"
+        cfg5["manual_weather"] = "clear"
+        cfg5["wallpaper_min_interval_seconds"] = 0
+        cfg5["smooth_transitions"] = False
+        eng5 = engine.Engine()
+        eng5.step(cfg5, None, now=at(12))
+        base = counts["theme"]
+        eng5.step(cfg5, None, now=at(12))
+        check("unchanged step skips re-apply", counts["theme"] == base)
+        eng5._last_theme = None
+        eng5._last_wall_at = None
+        eng5.step(cfg5, None, now=at(12))
+        check("guard reset forces immediate re-apply", counts["theme"] == base + 1)
+    finally:
+        (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+         sound.play_ambient, sound.stop_sound, sound.set_volume,
+         sound.pick_base, weather.get_weather) = saved
+
+
 def test_task_recolors_now():
     section("task changes the background promptly")
     import datetime as dt
@@ -1147,6 +1247,44 @@ def test_gui_helper():
     out2 = gui.apply_values_to_config(cfg, base_vals)
     check("auto color => None", out2["manual_theme_color"] is None)
 
+    # City picker mapping.
+    out3 = gui.apply_values_to_config(config.default_config(),
+                                      {**base_vals, "city": "Tokyo, Japan"})
+    check("city sets location name", out3["location"]["name"] == "Tokyo")
+    check("city sets latitude", abs(out3["location"]["lat"] - 35.6762) < 0.001)
+    check("no location_precision key", "location_precision" not in out3)
+    cfg_keep = config.default_config()
+    cfg_keep["location"] = {"lat": 1.0, "lon": 2.0, "name": "Nowhere"}
+    out4 = gui.apply_values_to_config(cfg_keep, {**base_vals, "city": "Atlantis"})
+    check("unknown city keeps existing location", out4["location"]["name"] == "Nowhere")
+
+
+def test_cities():
+    section("city picker")
+    check("choices are the city list", config.city_choices() == list(config.CITIES.keys()))
+    check("many cities listed", len(config.CITIES) >= 20)
+    check("every city has coords+name",
+          all({"lat", "lon", "name"} <= set(c) for c in config.CITIES.values()))
+    check("lat/lon in range",
+          all(-90 <= c["lat"] <= 90 and -180 <= c["lon"] <= 180
+              for c in config.CITIES.values()))
+    check("lookup returns a copy",
+          config.location_for_city("Tokyo, Japan") is not config.CITIES["Tokyo, Japan"])
+    check("unknown lookup => None", config.location_for_city("Atlantis") is None)
+    # label_for resolves by name...
+    check("label by name",
+          config.city_label_for({"location": {"name": "London"}}) == "London, UK")
+    # ...and by coordinates alone.
+    check("label by coords",
+          config.city_label_for({"location": {"lat": 48.8566, "lon": 2.3522}})
+          == "Paris, France")
+    check("default config resolves to its city",
+          config.city_label_for(config.DEFAULTS) == "Sydney, Australia")
+    # Unknown location falls back to the first listed city (never a raw sentinel).
+    check("unmatched coords => first city",
+          config.city_label_for({"location": {"lat": 0.0, "lon": 0.0}})
+          == next(iter(config.CITIES)))
+
 
 def test_clocks():
     section("stopwatch + countdown timer")
@@ -1278,6 +1416,7 @@ def main():
     test_autostart()
     test_webwall()
     test_governor()
+    test_bugfixes()
     test_task_recolors_now()
     test_sun_tracking()
     test_wallpaper_no_revert()
@@ -1289,6 +1428,7 @@ def main():
     test_drift()
     test_engine_guards()
     test_gui_helper()
+    test_cities()
     print(f"\n{'='*40}\nRESULT: {_passed} passed, {_failed} failed")
     return 1 if _failed else 0
 

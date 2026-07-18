@@ -1,5 +1,5 @@
 """
-Environment Theme Controller — entry point.
+Flow — entry point.
 
 Usage:
   python main.py              Launch the settings GUI (default).

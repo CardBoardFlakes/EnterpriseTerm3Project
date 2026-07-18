@@ -1,5 +1,5 @@
 """
-Weather source for the Environment Theme Controller.
+Weather source for the Flow.
 
 Provides live weather from Open-Meteo, but also supports:
   * a manual weather override (pick the condition yourself),
@@ -108,20 +108,13 @@ def _is_night(sunrise, sunset, now=None) -> bool:
     return not (sunrise <= now <= sunset)
 
 
-def rounded_location(cfg: dict):
-    """
-    The configured coordinates rounded to ``location_precision`` decimals, so
-    only a coarse (city-level) position is ever used or sent. 1 dp ≈ 11 km.
-    """
+def location_coords(cfg: dict):
+    """The configured city's coordinates (city-level by design)."""
     loc = cfg.get("location", {})
     try:
-        prec = int(cfg.get("location_precision", 1))
+        return float(loc.get("lat", LAT)), float(loc.get("lon", LON))
     except (TypeError, ValueError):
-        prec = 1
-    prec = max(0, min(6, prec))
-    lat = round(float(loc.get("lat", LAT)), prec)
-    lon = round(float(loc.get("lon", LON)), prec)
-    return lat, lon
+        return LAT, LON
 
 
 def get_live_weather(cfg: dict) -> dict:
@@ -130,10 +123,11 @@ def get_live_weather(cfg: dict) -> dict:
     humidity, UV, wind, …), tagged ``source`` = "live" or "fallback". This is
     always the true outside data — manual overrides never touch it.
 
-    Coordinates are rounded to a coarse, city-level precision first (privacy).
+    The location is a city picked in the GUI, so only a coarse, city-level
+    position is ever used.
     """
     try:
-        lat, lon = rounded_location(cfg)
+        lat, lon = location_coords(cfg)
         w = get_weather(lat, lon)
         w["source"] = "live"
         return w

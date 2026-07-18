@@ -1,6 +1,6 @@
 # Documentation
 
-Guides for the Environment Theme Controller. Start with the
+Guides for the Flow. Start with the
 [project README](../README.md) for install and a quick tour, then dive in here.
 
 | Guide | Read it when you want to… |

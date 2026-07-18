@@ -1,5 +1,4 @@
 import sys
-import time
 
 
 def get_idle_time() -> float:
