@@ -10,7 +10,9 @@ import json
 import os
 import datetime
 
-TASKS_FILE = "tasks.json"
+# Absolute path next to this module, so tasks are read/written from the same
+# place regardless of the launch directory (see config.CONFIG_FILE).
+TASKS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks.json")
 
 TASK_TYPES = ["daily", "once"]
 ACTIONS = ["notify", "chime", "set_weather", "set_theme"]

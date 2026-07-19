@@ -884,6 +884,25 @@ def test_bugfixes():
         eng5._last_wall_at = None
         eng5.step(cfg5, None, now=at(12))
         check("guard reset forces immediate re-apply", counts["theme"] == base + 1)
+
+        # BUG: picking an accent colour "did nothing" — the cross-fade eased the
+        # display slowly from the old colour while the wallpaper redraw stayed
+        # throttled, so the pick was barely visible. A manual colour must snap to
+        # full strength on the very first step, even mid cross-fade.
+        cfg6 = config.default_config()
+        cfg6["smooth_transitions"] = True          # easing ON (the hard case)
+        cfg6["theme_transition_seconds"] = 8
+        eng6 = engine.Engine()
+        eng6._eased_rgb = (140.0, 118.0, 162.0)    # a stale "purple" mid-fade
+        eng6._eased_at = at(12)
+        st6 = eng6.step(cfg6, None, now=at(12))     # dt≈0 => easing would barely move
+        # (no manual colour yet — establishes the eased baseline)
+        cfg6["manual_theme_color"] = [0, 238, 0]    # user picks green
+        st6b = eng6.step(cfg6, None, now=at(12))
+        check("manual colour snaps to full strength at once",
+              st6b["color"] == [0, 238, 0] and st6b["color_source"] == "manual")
+        check("manual colour is not left mid-transition",
+              eng6.transitioning is False)
     finally:
         (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
          sound.play_ambient, sound.stop_sound, sound.set_volume,
@@ -893,9 +912,10 @@ def test_bugfixes():
 def test_task_recolors_now():
     section("task changes the background promptly")
     import datetime as dt
-    o_notify, o_chime = engine.notify, sound.play_chime
+    o_notify, o_chime, o_save = engine.notify, sound.play_chime, config.save_config
     engine.notify = lambda *a, **k: None
     sound.play_chime = lambda *a, **k: None
+    config.save_config = lambda *a, **k: True   # never touch the real config file
     try:
         check("set_weather is a visual change",
               engine._run_task_action({"action": "set_weather", "action_value": "storm"},
@@ -906,7 +926,7 @@ def test_task_recolors_now():
         check("notify is not a visual change",
               engine._run_task_action({"action": "notify"}, {}) is False)
     finally:
-        engine.notify, sound.play_chime = o_notify, o_chime
+        engine.notify, sound.play_chime, config.save_config = o_notify, o_chime, o_save
 
     # A due weather task resets the wallpaper/theme guards so the new look
     # applies at once instead of waiting out the redraw interval.

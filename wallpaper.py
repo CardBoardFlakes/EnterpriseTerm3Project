@@ -473,6 +473,7 @@ def set_wallpaper(path: str, multi=True) -> bool:
     main one.
     """
     global _applied_path
+    changed = (path != _applied_path)
     if sys.platform == "darwin":
         ok = _set_wallpaper_macos(path, multi)
     elif sys.platform == "win32":
@@ -482,7 +483,22 @@ def set_wallpaper(path: str, multi=True) -> bool:
         return False
     if ok:
         _applied_path = path
+        # macOS 14+ (Sonoma/Sequoia): System Events updates the wallpaper
+        # record but the visible desktop frequently doesn't repaint until
+        # WallpaperAgent is restarted. Nudge it — but only on a genuine change,
+        # so periodic same-image re-applies don't cause needless churn.
+        if sys.platform == "darwin" and changed:
+            _refresh_wallpaper_agent_macos()
     return ok
+
+
+def _refresh_wallpaper_agent_macos():
+    """Restart WallpaperAgent so the desktop actually repaints (Sequoia bug)."""
+    try:
+        subprocess.run(["killall", "WallpaperAgent"],
+                       capture_output=True, text=True, timeout=5)
+    except Exception as e:
+        print(f"[wallpaper] Could not refresh WallpaperAgent: {e}")
 
 
 def _set_wallpaper_macos(path: str, multi=True) -> bool:
