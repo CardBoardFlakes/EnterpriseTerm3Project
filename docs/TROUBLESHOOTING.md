@@ -9,8 +9,6 @@ working and prints a `[subsystem] …` note to the console.
 - [The wallpaper isn't changing](#the-wallpaper-isnt-changing)
 - [The accent colour didn't change (macOS)](#the-accent-colour-didnt-change-macos)
 - [Weather is wrong or says "fallback"](#weather-is-wrong-or-says-fallback)
-- [Smooth animation looks choppy or keeps pausing](#smooth-animation-looks-choppy-or-keeps-pausing)
-- [Ultra wallpaper shows nothing](#ultra-wallpaper-shows-nothing)
 - [Run-at-login didn't stick](#run-at-login-didnt-stick)
 - [Reset everything](#reset-everything)
 
@@ -58,7 +56,7 @@ a clip only every few minutes.
   45s) and only happen when the colour/brightness actually changes — give it a
   moment, or change the manual weather to force a difference.
 - Linux desktops aren't supported for *setting* the wallpaper (the image is
-  still generated); use the **Ultra** web backend with an engine instead.
+  still generated).
 - Check the console for `[wallpaper] Failed to set …`.
 
 ### It only changes when I'm *not* in a fullscreen app (macOS)
@@ -94,34 +92,6 @@ system accent (Blue, Purple, Graphite, …), so it won't be an exact RGB match.
 
 ---
 
-## Smooth animation looks choppy or keeps pausing
-
-Smooth mode redraws the whole desktop image repeatedly, which is heavier than a
-static image. The **load governor** intentionally lowers the frame rate — or
-pauses to a static frame — when the machine is busy, then resumes when it frees
-up (you'll see `[engine] Animation paused …`).
-
-- Lower the **Frame rate (Smooth)** slider for less load.
-- Raise `wallpaper_load_ceiling` in `config.json` if you want it to tolerate
-  more load before backing off.
-- For consistently smooth motion on a busy machine, use **Ultra** instead — it
-  offloads rendering to a dedicated GPU wallpaper engine.
-
----
-
-## Ultra wallpaper shows nothing
-
-- Did you point the wallpaper engine at the right file? It's `index.html` in
-  `~/.environment_theme_controller/webwallpaper/` — the **Set up the wallpaper
-  app…** button opens that folder.
-- Is the engine (ScreenPlay / Lively / Plash) actually running with that page
-  set as the wallpaper?
-- Is the app **Started**? It only refreshes `weather.json` while running; the
-  page reads that file every couple of seconds.
-- Full steps: [wallpaper guide → Ultra](WALLPAPER.md#setting-up-ultra-external-app).
-
----
-
 ## Run-at-login didn't stick
 
 - **macOS:** check `~/Library/LaunchAgents/com.environmenttheme.controller.plist`
@@ -141,7 +111,7 @@ next launch:
 
 ```bash
 rm config.json tasks.json
-rm -rf ~/.environment_theme_controller     # generated wallpaper + web assets
+rm -rf ~/.environment_theme_controller     # generated wallpaper assets
 ```
 
 (Deleting `sounds/` also removes any custom audio; placeholders regenerate.)

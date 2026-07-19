@@ -26,7 +26,6 @@ unreadable file is replaced with defaults rather than crashing.
 | Tasks | `tasks.json` (project folder) — see [tasks guide](TASKS_AND_TIMER.md) |
 | Ambient sounds | `sounds/` (project folder) |
 | Generated PNG wallpaper | `~/.environment_theme_controller/` |
-| "Ultra" web wallpaper assets | `~/.environment_theme_controller/webwallpaper/` |
 
 ---
 
@@ -57,14 +56,6 @@ Under `"features"`; each is ANDed with the master switch.
 | `wallpaper_patterns` | bool | `true` | Weather patterns (rain/sun/clouds/stars). |
 | `wallpaper_warmth` | bool | `true` | Warm the palette when it's cold outside. |
 | `wallpaper_min_interval_seconds` | int | `45` | Minimum gap between static wallpaper redraws. |
-| `wallpaper_backend` | `"png"` \| `"web"` | `"png"` | `png` = built-in image; `web` = external-engine ("Ultra") HTML wallpaper. |
-| `wallpaper_animated` | bool | `false` | Built-in ("Smooth") continuous animation, for the `png` backend. |
-| `wallpaper_animated_fps` | int 1–30 | `6` | Target frame rate for Smooth animation. |
-| `wallpaper_load_ceiling` | int 0–100 | `85` | Per-core system-load % above which the animation governor throttles/pauses. |
-
-> The GUI's **Wallpaper motion** chooser maps to these: **Off** = `png` +
-> `animated:false`; **Smooth** = `png` + `animated:true`; **Ultra** = `web`.
-> See the [wallpaper guide](WALLPAPER.md).
 
 ## Sound
 
@@ -99,7 +90,7 @@ Example (London):
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `active_profile` | `none`/`focus`/`creativity`/`relax` | `"none"` | Mood profile overlaying colours, motion and sound. |
+| `active_profile` | `none`/`focus`/`creativity`/`relax` | `"none"` | Mood profile overlaying colours and sound. |
 | `smooth_transitions` | bool | `true` | Cross-fade colours on time/weather changes instead of snapping. |
 | `theme_transition_seconds` | int | `8` | How long a weather cross-fade takes. |
 | `seasonal_themes` | bool | `true` | Apply a seasonal wash to the palette. |
@@ -153,10 +144,6 @@ Under `"pomodoro"`, minutes:
   "wallpaper_shift_strength": 35,
   "wallpaper_patterns": true,
   "wallpaper_warmth": true,
-  "wallpaper_backend": "png",
-  "wallpaper_animated": true,
-  "wallpaper_animated_fps": 8,
-  "wallpaper_load_ceiling": 85,
   "sound_volume": 25,
   "sound_mode": "random",
   "sound_interval_minutes": 5,

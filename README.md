@@ -39,12 +39,11 @@ See the full walkthrough in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 | **Time-of-day light** | Theme + wallpaper move through the day's light — sunrise, morning, midday, afternoon, sunset, dusk, night — warm and low at the edges, bright and neutral at noon, deep blue at night. |
 | **Gradual transitions** | Time-of-day colour changes continuously and weather changes cross-fade over a few seconds — no sudden jumps. |
 | **Seasons** | A seasonal wash nudges the palette (fresh-green spring → golden summer → amber autumn → cool-blue winter); hemisphere auto-detected from your latitude. |
-| **Mood profiles** | Switchable **Focus / Creativity / Relax** profiles reshape the colours, motion and sound; toggle off with "None". |
+| **Mood profiles** | Switchable **Focus / Creativity / Relax** profiles reshape the colours and sound; toggle off with "None". |
 | **Multi-monitor** | Sets the wallpaper on every connected display (toggleable). |
 | **Accessibility** | A **high-contrast** mode forces bold, maximum-contrast colours and a black/white/yellow window. |
 | **Dark/Light lock** | Force the device (and app) to Dark or Light, or let it follow the time of day. |
-| **Weather wallpaper** | A sky-gradient background per condition, with moving patterns (rain, sun, clouds, stars) and a cosy warm tint when it's cold. |
-| **Animated wallpaper** | One **Off / Smooth / Ultra** choice — *Smooth* animates with zero setup; *Ultra* uses a free external app for GPU-smooth motion. |
+| **Weather wallpaper** | A sky-gradient background per condition, with weather patterns (rain, sun, clouds, stars) and a cosy warm tint when it's cold. |
 | **Ambient sound** | Weather/time soundscapes with your own files + random variants; play looped or occasionally. Windy skies use the cloudy ambience. |
 | **Music player** | Play your own downloaded songs (mp3/ogg/wav) in the background, with a playlist, auto-advance and its own volume. |
 | **Auto-duck** | Optionally pause the ambient sound while other audio plays (your music player, or best-effort Spotify/Apple Music on macOS / any app on Windows). |
@@ -65,11 +64,11 @@ Detailed, task-focused guides live in **[`docs/`](docs/)**:
 | Guide | What's inside |
 |---|---|
 | [User guide](docs/USER_GUIDE.md) | First launch, the Dashboard & Appearance tabs, the Focus & Tasks window, Start/Stop, running at login. |
-| [Wallpaper guide](docs/WALLPAPER.md) | Motion (Off/Smooth/Ultra), weather patterns, cold warmth, and step-by-step external-app setup (ScreenPlay / Lively / Plash). |
+| [Wallpaper guide](docs/WALLPAPER.md) | The static weather wallpaper: weather patterns, sun/moon movement, and the cold-weather warm tint. |
 | [Sound guide](docs/SOUNDS.md) | File names, adding your own clips, variants, loop vs. random playback. |
 | [Tasks & timer guide](docs/TASKS_AND_TIMER.md) | Pomodoro usage and creating daily / one-off scheduled tasks. |
 | [Configuration reference](docs/CONFIGURATION.md) | Every `config.json` key, defaults, and where files are stored. |
-| [Troubleshooting](docs/TROUBLESHOOTING.md) | GUI, audio, wallpaper, accent-colour, weather, and animation issues. |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | GUI, audio, wallpaper, accent-colour, and weather issues. |
 
 ---
 
@@ -118,12 +117,10 @@ privacy, use a nearby town's coordinates rather than your exact address.
 | `main.py` | Entry point (GUI / `--once` / `--background`) |
 | `gui.py` | Tkinter UI: Dashboard + Appearance tabs, separate Focus & Tasks window |
 | `engine.py` | Stateful orchestration: cheap steps, work only on change |
-| `config.py` | Defaults, load/save, feature gating, friendly-motion mapping |
+| `config.py` | Defaults, load/save, feature gating |
 | `weather.py` | Live weather (Open-Meteo) + manual override + offline fallback |
 | `theme.py` | Compute colour + apply accent (Windows / macOS) |
 | `wallpaper.py` | Generate + set the weather wallpaper (patterns, warmth, drift) |
-| `webwall.py` | "Ultra" web wallpaper: HTML/canvas page + live `weather.json` feed |
-| `perf.py` | Load governor that throttles/pauses the Smooth animation |
 | `profiles.py` | Focus / Creativity / Relax mood profiles (colour + settings overlay) |
 | `sound.py` | Ambient sound selection, variants, playback, placeholder synth |
 | `music.py` | Background music player for your own songs |
@@ -154,11 +151,10 @@ pip install ruff
 python3 -m ruff check .      # 0 issues
 ```
 
-A headless suite (**313 checks**) covering config + friendly-motion mapping,
+A headless test suite covering config,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
-/ warmth, the
-animation load governor and animated-wallpaper wiring, the web backend, sound
+/ warmth, sound
 selection / variants / modes, tasks, autostart, the Pomodoro timer, the GUI
 value mapping, and the engine's change-guards. All system-mutating calls
 (accent, wallpaper, audio, launchctl/registry) are stubbed, so running the
