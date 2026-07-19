@@ -11,6 +11,8 @@ import os
 import math
 import random
 import struct
+import threading
+import time
 import wave
 
 # Absolute so the app always finds your files regardless of the working
@@ -37,6 +39,7 @@ _mixer = None
 current_sound = None
 _current_path = None      # path of the sound currently playing (for dedup)
 _current_volume = 0.25
+_music_prev_vol = None     # music-stream volume saved while a chime ducks it
 
 
 def _ensure_mixer():
@@ -222,8 +225,44 @@ def play_ambient(condition: str, is_night: bool, volume_pct=None,
                volume_pct=volume_pct, loop=loop)
 
 
+def _duck_for_chime():
+    """Lower ambient + music so a chime is clearly heard (chime > music > ambient)."""
+    global _music_prev_vol
+    # Ambient loop: drop to a whisper (restored after the chime).
+    if current_sound is not None:
+        try:
+            current_sound.set_volume(_current_volume * 0.15)
+        except Exception:
+            pass
+    # Music stream: remember its level once, then duck it.
+    try:
+        if _mixer and _music_prev_vol is None and _mixer.music.get_busy():
+            _music_prev_vol = _mixer.music.get_volume()
+            _mixer.music.set_volume(_music_prev_vol * 0.2)
+    except Exception:
+        _music_prev_vol = None
+
+
+def _restore_after_chime():
+    """Put ambient + music back to their normal volumes once the chime ends."""
+    global _music_prev_vol
+    if current_sound is not None:
+        try:
+            current_sound.set_volume(_current_volume)
+        except Exception:
+            pass
+    if _music_prev_vol is not None:
+        try:
+            _mixer.music.set_volume(_music_prev_vol)
+        except Exception:
+            pass
+        _music_prev_vol = None
+
+
 def play_chime():
-    """One-shot chime, used when a task/schedule fires."""
+    """One-shot chime for a task/schedule. It takes audio priority: the music
+    player and ambience briefly duck so the chime is heard clearly, then their
+    volumes are restored (chime > music > ambient)."""
     if not _ensure_mixer():
         return
     path = os.path.join(SOUNDS_DIR, "chime.wav")
@@ -234,10 +273,17 @@ def play_chime():
             return
     try:
         snd = _mixer.Sound(path)
-        snd.set_volume(min(1.0, _current_volume + 0.25))
+        _duck_for_chime()
+        snd.set_volume(min(1.0, _current_volume + 0.35))
         snd.play()
+        dur = snd.get_length() or 0.8
     except Exception as e:
         print(f"[sound] Failed to play chime: {e}")
+        _restore_after_chime()
+        return
+    # Restore the ducked audio shortly after the chime finishes.
+    threading.Thread(target=lambda: (time.sleep(dur + 0.2), _restore_after_chime()),
+                     daemon=True).start()
 
 
 def stop_sound():

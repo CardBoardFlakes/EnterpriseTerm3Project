@@ -41,18 +41,6 @@ DEFAULTS = {
     "wallpaper_refresh_seconds": 90,
     "wallpaper_patterns": True,           # weather-specific patterns (rain, sun, stars…)
     "wallpaper_warmth": True,             # warm the palette when it's cold outside
-    # Wallpaper backend:
-    #   "png" — built-in: generate an image and set it as the desktop.
-    #   "web" — maintain an HTML/canvas wallpaper + weather.json feed for an
-    #           external engine (ScreenPlay / Lively / Plash) to render with
-    #           smooth GPU animation. The app itself stays near-zero cost.
-    "wallpaper_backend": "png",
-    # Animated wallpaper: smooth, continuously redrawn motion. Costs real CPU,
-    # so a load governor throttles the frame rate and fully pauses it (falling
-    # back to a static frame) whenever the machine is struggling.
-    "wallpaper_animated": False,          # off by default — opt in
-    "wallpaper_animated_fps": 6,          # target frames/sec when unthrottled
-    "wallpaper_load_ceiling": 85,         # percent per-core load → throttle/pause above this
 
     # Sound.
     "sound_volume": 25,           # percent 0-100 — "subtle" by default
@@ -122,7 +110,6 @@ DEFAULTS = {
 WEATHER_CHOICES = ["auto", "clear", "cloud", "rain", "storm", "night"]
 TIME_CHOICES = ["auto", "sunrise", "morning", "midday", "afternoon", "sunset", "dusk", "night"]
 FEATURE_KEYS = ["dynamic_theme", "wallpaper", "ambient_sound", "tasks"]
-WALLPAPER_BACKENDS = ["png", "web"]
 SOUND_MODES = ["loop", "random"]
 PROFILE_CHOICES = ["none", "focus", "creativity", "relax"]
 ACCESSIBILITY_CHOICES = ["none", "high_contrast"]
@@ -210,34 +197,6 @@ def location_for_city(label: str):
     c = CITIES.get(label)
     return dict(c) if c else None
 
-# A single, friendly wallpaper-motion choice that hides the backend/animated
-# plumbing from the user:
-#   off    -> still image (png backend, not animated)
-#   smooth -> built-in animation, zero setup (png backend, animated)
-#   ultra  -> smoothest, needs an external wallpaper app (web backend)
-WALLPAPER_MOTIONS = ["off", "smooth", "ultra"]
-
-
-def motion_from_config(cfg: dict) -> str:
-    """Derive the friendly motion choice from the raw backend/animated flags."""
-    if (cfg.get("wallpaper_backend") or "png").lower() == "web":
-        return "ultra"
-    return "smooth" if cfg.get("wallpaper_animated") else "off"
-
-
-def apply_motion(cfg: dict, motion: str) -> dict:
-    """Set the backend/animated flags from a friendly motion choice."""
-    m = (motion or "off").lower()
-    if m == "ultra":
-        cfg["wallpaper_backend"] = "web"
-    elif m == "smooth":
-        cfg["wallpaper_backend"] = "png"
-        cfg["wallpaper_animated"] = True
-    else:
-        cfg["wallpaper_backend"] = "png"
-        cfg["wallpaper_animated"] = False
-    return cfg
-
 
 def _deep_merge(base: dict, override: dict) -> dict:
     """
@@ -263,7 +222,8 @@ def default_config() -> dict:
 
 # Settings that used to exist but have since been removed. They're stripped
 # from any loaded config so old files get cleaned up on the next save.
-RETIRED_KEYS = ("location_precision",)
+RETIRED_KEYS = ("location_precision", "wallpaper_backend", "wallpaper_animated",
+                "wallpaper_animated_fps", "wallpaper_load_ceiling")
 
 
 def load_config(path: str = CONFIG_FILE) -> dict:

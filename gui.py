@@ -33,7 +33,6 @@ import sound
 import music
 import pomodoro
 import clocks
-import webwall
 
 
 # ---------------------------------------------------------
@@ -65,10 +64,6 @@ def apply_values_to_config(cfg: dict, values: dict) -> dict:
     cfg["wallpaper_shift_strength"] = int(round(values["wallpaper_shift"]))
     cfg["wallpaper_patterns"] = bool(values.get("wallpaper_patterns", True))
     cfg["wallpaper_warmth"] = bool(values.get("wallpaper_warmth", True))
-    cfg["wallpaper_animated"] = bool(values.get("wallpaper_animated", False))
-    cfg["wallpaper_animated_fps"] = max(1, int(round(values.get("wallpaper_animated_fps", 6))))
-    backend = str(values.get("wallpaper_backend", "png")).lower()
-    cfg["wallpaper_backend"] = backend if backend in config.WALLPAPER_BACKENDS else "png"
     cfg["countdown_minutes"] = max(1, int(values.get("countdown_minutes", 10)))
     cfg["pomodoro"] = {
         "work_min": max(1, int(values["p_work"])),
@@ -267,6 +262,7 @@ class App:
         self.btn_timer = None
         self.lbl_cycles = None
         self.music_list = None
+        self.btn_music_play = None
         self._music_want = False   # user asked for music -> auto-advance tracks
 
         root.title("Flow")
@@ -295,6 +291,8 @@ class App:
         self.v_tasks = tk.BooleanVar(value=f.get("tasks", True))
         self.v_tint = tk.DoubleVar(value=float(c.get("weather_tint_strength", 40)))
         self.v_volume = tk.DoubleVar(value=float(c.get("sound_volume", 25)))
+        self._vol_save_job = None            # debounced save for the volume slider
+        self.v_volume.trace_add("write", self._on_ambient_volume)
         self.v_soundmode = tk.StringVar(value=c.get("sound_mode", "loop"))
         self.v_soundinterval = tk.IntVar(value=int(c.get("sound_interval_minutes", 5)))
         self.v_musicvol = tk.IntVar(value=int(c.get("music_volume", 60)))
@@ -306,11 +304,6 @@ class App:
         self.v_wpshift = tk.DoubleVar(value=float(c.get("wallpaper_shift_strength", 35)))
         self.v_wppatterns = tk.BooleanVar(value=c.get("wallpaper_patterns", True))
         self.v_wpwarmth = tk.BooleanVar(value=c.get("wallpaper_warmth", True))
-        self.v_wpanimated = tk.BooleanVar(value=c.get("wallpaper_animated", False))
-        self.v_wpfps = tk.DoubleVar(value=float(c.get("wallpaper_animated_fps", 6)))
-        self.v_wpbackend = tk.StringVar(value=c.get("wallpaper_backend", "png"))
-        # One friendly control drives the two flags above.
-        self.v_motion = tk.StringVar(value=config.motion_from_config(c))
         self.v_profile = tk.StringVar(value=c.get("active_profile", "none"))
         self.v_access = tk.StringVar(value=c.get("accessibility_mode", "none"))
         self.v_appearance = tk.StringVar(value=c.get("appearance_mode", "auto"))
@@ -681,24 +674,6 @@ class App:
                         style="Card.TCheckbutton",
                         variable=self.v_wpwarmth).pack(anchor="w")
 
-        # Motion: one friendly choice, easy option needs no external software.
-        mo = _card(body, "Wallpaper motion")
-        for val, title in [("off", "Off  —  still image"),
-                           ("smooth", "Smooth  —  built-in animation, no setup needed"),
-                           ("ultra", "Ultra  —  smoothest, needs a free wallpaper app")]:
-            ttk.Radiobutton(mo, text=title, value=val, variable=self.v_motion,
-                            style="Card.TRadiobutton",
-                            command=self._apply_motion).pack(anchor="w", pady=1)
-        self._slider(mo, "Frame rate (Smooth)", self.v_wpfps, from_=1, to=30, unit="fps")
-        self.ultra_box = ttk.Frame(mo, style="Card.TFrame")
-        ttk.Label(self.ultra_box, style="Muted.TLabel", wraplength=460,
-                  text="Ultra renders in a free wallpaper app (ScreenPlay / Lively / "
-                       "Plash). Click below — it creates the files and opens the "
-                       "folder; then add index.html in that app once.").pack(anchor="w")
-        ttk.Button(self.ultra_box, text="Set up the wallpaper app…", style="Ghost.TButton",
-                   command=self.on_open_webwall).pack(anchor="w", pady=(4, 0))
-        self._apply_motion()      # sync flags + show/hide the Ultra help
-
         sc = _card(body, "Sound")
         self._slider(sc, "Ambient volume", self.v_volume)
         mr = ttk.Frame(sc, style="Card.TFrame"); mr.pack(fill="x", pady=4)
@@ -872,6 +847,32 @@ class App:
         self._apply_live("City updated")
         self.refresh_weather()
 
+    def _on_ambient_volume(self, *_):
+        """Ambient-volume slider moved: change the playing sound at once, and
+        persist (debounced) so the engine keeps the new level."""
+        try:
+            sound.set_volume(self.v_volume.get())      # instant feedback
+        except Exception:
+            pass
+        job = getattr(self, "_vol_save_job", None)
+        if job:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+        try:
+            self._vol_save_job = self.root.after(400, self._save_volume)
+        except Exception:
+            self._save_volume()
+
+    def _save_volume(self):
+        self._vol_save_job = None
+        self._collect()
+        config.save_config(self.cfg)
+        if self.engine_thread and self.engine_thread.is_alive():
+            self.engine_thread.wake()
+        self.v_status.set(f"Ambient volume: {int(self.v_volume.get())}%")
+
     def _apply_live(self, note):
         """
         Persist current settings and apply them *immediately* so a manual
@@ -942,6 +943,7 @@ class App:
         self.btn_timer = None
         self.lbl_cycles = None
         self.music_list = None
+        self.btn_music_play = None
         self.clock_settings = None
         self.btn_clock_extra = None
 
@@ -958,8 +960,10 @@ class App:
 
         ctl = ttk.Frame(card, style="Card.TFrame"); ctl.pack(fill="x", pady=(8, 0))
         ttk.Button(ctl, text="⏮", width=3, style="Ghost.TButton", command=self.on_music_prev).pack(side="left")
-        ttk.Button(ctl, text="▶ Play", style="Accent.TButton", command=self.on_music_play).pack(side="left", padx=4)
-        ttk.Button(ctl, text="⏸", width=3, style="Ghost.TButton", command=self.on_music_pause).pack(side="left")
+        # One button that flips between Play and Pause with the playback state.
+        self.btn_music_play = ttk.Button(ctl, text="▶ Play", style="Accent.TButton",
+                                         command=self.on_music_toggle)
+        self.btn_music_play.pack(side="left", padx=4)
         ttk.Button(ctl, text="⏹", width=3, style="Ghost.TButton", command=self.on_music_stop).pack(side="left")
         ttk.Button(ctl, text="⏭", width=3, style="Ghost.TButton", command=self.on_music_next).pack(side="left", padx=4)
         self._slider(card, "Music volume", self.v_musicvol)
@@ -985,6 +989,12 @@ class App:
         for p in music.list_tracks():
             self.music_list.insert("end", os.path.basename(p))
 
+    def _nudge_engine(self):
+        """Make the engine re-evaluate ambient now (music > ambient), so it
+        pauses/resumes the ambience the moment music starts or stops."""
+        if self.engine_thread and self.engine_thread.is_alive():
+            self.engine_thread.wake()
+
     def on_music_play(self):
         tracks = music.list_tracks()
         if not tracks:
@@ -996,25 +1006,37 @@ class App:
             idx = self.music_list.curselection()[0]
         if music.play_list(tracks, idx, self.v_musicvol.get()):
             self._music_want = True
+            self._nudge_engine()          # pause ambient right away
         else:
             messagebox.showwarning("Music", "Couldn't play — is pygame installed? (pip install pygame)")
         self._update_music_label()
 
-    def on_music_pause(self):
-        music.toggle_pause()
+    def on_music_toggle(self):
+        """Play / Pause / Resume from one button, matching the current state."""
+        if music.is_playing():
+            music.toggle_pause()          # playing -> pause
+        elif music.is_paused():
+            music.toggle_pause()          # paused -> resume
+        else:
+            self.on_music_play()          # stopped -> start (also updates label)
+            return
+        self._nudge_engine()              # ambient follows: pause on play, resume on pause
         self._update_music_label()
 
     def on_music_stop(self):
         music.stop()
         self._music_want = False
+        self._nudge_engine()              # resume ambient now that music stopped
         self._update_music_label()
 
     def on_music_next(self):
         music.next_track(self.v_musicvol.get())
+        self._nudge_engine()
         self._update_music_label()
 
     def on_music_prev(self):
         music.prev_track(self.v_musicvol.get())
+        self._nudge_engine()
         self._update_music_label()
 
     def on_music_open(self):
@@ -1045,6 +1067,10 @@ class App:
             self.music_now.set(state + os.path.basename(cur))
         else:
             self.music_now.set("Nothing playing")
+        # The main button shows Pause while playing, Play otherwise.
+        if self._alive(getattr(self, "btn_music_play", None)):
+            self.btn_music_play.config(
+                text="⏸ Pause" if music.is_playing() else "▶ Play")
 
     def _build_timers_frame(self, parent):
         page = ttk.Frame(parent, padding=12)
@@ -1285,7 +1311,9 @@ class App:
         if (self._music_want and music.has_playlist()
                 and not music.is_playing() and not music.is_paused()):
             music.next_track(self.v_musicvol.get())
-            self._update_music_label()
+        # Keep the music label + Play/Pause button in sync with playback,
+        # even when the state changes on its own (a track ending).
+        self._update_music_label()
         self.root.after(1000, self._timer_loop)
 
     def on_clock_toggle(self):
@@ -1396,9 +1424,6 @@ class App:
             "wallpaper_shift": self.v_wpshift.get(),
             "wallpaper_patterns": self.v_wppatterns.get(),
             "wallpaper_warmth": self.v_wpwarmth.get(),
-            "wallpaper_animated": self.v_wpanimated.get(),
-            "wallpaper_animated_fps": self.v_wpfps.get(),
-            "wallpaper_backend": self.v_wpbackend.get(),
             "p_work": self.v_pwork.get(),
             "p_break": self.v_pbreak.get(),
             "p_long": self.v_plong.get(),
@@ -1464,35 +1489,6 @@ class App:
             self.v_status.set("Settings saved.")
         else:
             messagebox.showerror("Error", "Could not write config.json.")
-
-    def _apply_motion(self):
-        """Translate the friendly motion choice into the backend/animated flags."""
-        m = self.v_motion.get()
-        if m == "ultra":
-            self.v_wpbackend.set("web")
-        elif m == "smooth":
-            self.v_wpbackend.set("png")
-            self.v_wpanimated.set(True)
-        else:
-            self.v_wpbackend.set("png")
-            self.v_wpanimated.set(False)
-        # Reveal the external-app setup only when it's actually needed.
-        if self._alive(getattr(self, "ultra_box", None)):
-            if m == "ultra":
-                self.ultra_box.pack(anchor="w", fill="x", pady=(8, 0))
-            else:
-                self.ultra_box.pack_forget()
-
-    def on_open_webwall(self):
-        """Create the HTML wallpaper assets and reveal them in the file manager."""
-        webwall.ensure_assets()
-        if webwall.open_folder():
-            self.v_status.set(f"Web wallpaper ready: {webwall.html_path()}")
-        else:
-            messagebox.showinfo(
-                "Web wallpaper",
-                "Point your wallpaper engine (ScreenPlay / Lively / Plash) at:\n\n"
-                f"{webwall.html_path()}")
 
     def on_manage_sounds(self):
         """Show the exact filenames each weather needs, and open the folder."""

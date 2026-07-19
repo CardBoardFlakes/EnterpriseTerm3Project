@@ -21,6 +21,12 @@ CACHE_DIR = os.path.join(os.path.expanduser("~"), ".environment_theme_controller
 # removed — which would make it revert to the OS default background.
 _applied_path = None
 
+# macOS only: whether we've already restarted WallpaperAgent once this run.
+# The restart is needed once to un-stick the agent (Sequoia won't repaint
+# otherwise), but doing it on every change flashes the desktop grey — so we do
+# it a single time and let later changes fade in smoothly.
+_agent_warmed = False
+
 
 # ---------------------------------------------------------
 # Colour helpers
@@ -472,7 +478,7 @@ def set_wallpaper(path: str, multi=True) -> bool:
     *multi*: when True, set it on every connected monitor; otherwise just the
     main one.
     """
-    global _applied_path
+    global _applied_path, _agent_warmed
     changed = (path != _applied_path)
     if sys.platform == "darwin":
         ok = _set_wallpaper_macos(path, multi)
@@ -483,17 +489,20 @@ def set_wallpaper(path: str, multi=True) -> bool:
         return False
     if ok:
         _applied_path = path
-        # macOS 14+ (Sonoma/Sequoia): System Events updates the wallpaper
-        # record but the visible desktop frequently doesn't repaint until
-        # WallpaperAgent is restarted. Nudge it — but only on a genuine change,
-        # so periodic same-image re-applies don't cause needless churn.
-        if sys.platform == "darwin" and changed:
+        # macOS 14+ (Sonoma/Sequoia): System Events updates the wallpaper record
+        # but the visible desktop won't repaint until WallpaperAgent is nudged.
+        # Restarting the agent briefly blanks the desktop to grey, so do it just
+        # ONCE (to un-stick it); after that the agent tracks `set picture` calls
+        # live and macOS fades between images — smooth, no grey flash.
+        if sys.platform == "darwin" and changed and not _agent_warmed:
             _refresh_wallpaper_agent_macos()
+            _agent_warmed = True
     return ok
 
 
 def _refresh_wallpaper_agent_macos():
-    """Restart WallpaperAgent so the desktop actually repaints (Sequoia bug)."""
+    """Restart WallpaperAgent so the desktop actually repaints (Sequoia bug).
+    Used once per run — see the note in set_wallpaper about the grey flash."""
     try:
         subprocess.run(["killall", "WallpaperAgent"],
                        capture_output=True, text=True, timeout=5)
@@ -504,17 +513,22 @@ def _refresh_wallpaper_agent_macos():
 def _set_wallpaper_macos(path: str, multi=True) -> bool:
     # Use a POSIX file reference — more reliable than a bare string path on
     # recent macOS (Sonoma/Sequoia). With *multi*, set every desktop (one per
-    # display); otherwise just the main desktop.
+    # display) both via the collection form and an explicit per-desktop loop
+    # (belt-and-suspenders — some macOS builds honour only one). The script
+    # returns the desktop count so we can see how many displays it reached.
     if multi:
-        target = ('  repeat with d in desktops\n'
-                  '    set picture of d to thePic\n'
-                  '  end repeat\n')
+        body = ('  set picture of every desktop to thePic\n'
+                '  repeat with d in desktops\n'
+                '    set picture of d to thePic\n'
+                '  end repeat\n'
+                '  return count of desktops\n')
     else:
-        target = '  set picture of desktop 1 to thePic\n'
+        body = ('  set picture of desktop 1 to thePic\n'
+                '  return 1\n')
     script = (
         'tell application "System Events"\n'
         f'  set thePic to POSIX file "{path}"\n'
-        f'{target}'
+        f'{body}'
         'end tell'
     )
     try:
@@ -530,7 +544,8 @@ def _set_wallpaper_macos(path: str, multi=True) -> bool:
             print(f"[wallpaper] osascript error setting wallpaper: "
                   f"{res.stderr.strip() or res.returncode}")
             return False
-        print(f"[wallpaper] macOS desktop set to {path}")
+        n = (res.stdout or "").strip()
+        print(f"[wallpaper] macOS: set {n or '?'} desktop(s) -> {path}")
         return True
     except Exception as e:
         print(f"[wallpaper] Failed to set macOS wallpaper: {e}")

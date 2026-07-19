@@ -94,8 +94,7 @@ with an accent tinted to the current sky — so the app matches your desktop.
 Looks and performance — set once and forget.
 
 - **Wallpaper look** — tint strength, subtle colour drift, weather patterns
-  (rain/sun/clouds/stars), and the cold-weather warm tint.
-- **Wallpaper motion** — **Off / Smooth / Ultra**. See the
+  (rain/sun/clouds/stars), and the cold-weather warm tint. See the
   [Wallpaper guide](WALLPAPER.md).
 - **Sound** — volume, **loop vs. random** playback, interval, and a
   **Sound files…** button that lists the required filenames and opens the
@@ -167,7 +166,7 @@ run-at-login launcher uses.
 |---|---|
 | Settings | `config.json` (in the project folder) |
 | Tasks | `tasks.json` (in the project folder) |
-| Generated wallpaper + web assets | `~/.environment_theme_controller/` |
+| Generated wallpaper | `~/.environment_theme_controller/` |
 | Ambient sound files | `sounds/` (in the project folder) |
 
 To change your **location** for live weather, pick your **City** from the

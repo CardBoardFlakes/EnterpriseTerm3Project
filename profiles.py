@@ -6,26 +6,27 @@ whole environment shifts to suit what you're doing. Profiles can be switched
 between and turned off ("none"). Everything here is pure so it's testable
 without a display.
 
-  * Focus      — calm, cool, low-saturation; quiet; no motion. Fewer distractions.
-  * Creativity — vivid, saturated, slightly warm; lively motion.
+  * Focus      — calm, cool, low-saturation; quiet. Fewer distractions.
+  * Creativity — vivid, saturated, slightly warm; lively.
   * Relax      — warm, dim, gentle; louder ambience.
 """
 
 import colorsys
 
 # name -> knobs
-#   saturation : multiply colour saturation
-#   warmth     : hue nudge toward warm (+) or cool (-), in 0..1 hue units * 0.1
-#   brightness : multiply value
-#   volume     : ambient sound volume (percent)
-#   motion     : "off" | "smooth"  (maps to the wallpaper animation)
+#   saturation   : multiply colour saturation
+#   warmth       : hue nudge toward warm (+) or cool (-), in 0..1 hue units * 0.1
+#   brightness   : multiply value
+#   volume_scale : MULTIPLY the user's ambient-volume slider (so the slider
+#                  always has effect — the profile only makes it relatively
+#                  quieter/louder, it never overrides the chosen level).
 _PROFILES = {
     "focus":      {"label": "Focus",      "saturation": 0.70, "warmth": -0.06,
-                   "brightness": 0.96, "volume": 12, "motion": "off"},
+                   "brightness": 0.96, "volume_scale": 0.5},
     "creativity": {"label": "Creativity", "saturation": 1.30, "warmth": 0.05,
-                   "brightness": 1.00, "volume": 30, "motion": "smooth"},
+                   "brightness": 1.00, "volume_scale": 1.0},
     "relax":      {"label": "Relax",      "saturation": 0.95, "warmth": 0.16,
-                   "brightness": 0.82, "volume": 45, "motion": "smooth"},
+                   "brightness": 0.82, "volume_scale": 1.4},
 }
 
 PROFILE_NAMES = ["focus", "creativity", "relax"]
@@ -67,7 +68,7 @@ def adjust_color(rgb, name):
 
 def overlay_config(cfg, name):
     """
-    Return *cfg* with the profile's settings applied (sound volume + motion).
+    Return *cfg* with the profile's settings applied (sound volume).
     Returns the same dict unchanged when no profile is active. Non-destructive:
     a shallow copy is made only when a profile is active.
     """
@@ -75,11 +76,8 @@ def overlay_config(cfg, name):
     if not p:
         return cfg
     out = dict(cfg)
-    out["sound_volume"] = p["volume"]
-    if p["motion"] == "off":
-        out["wallpaper_animated"] = False
-    elif p["motion"] == "smooth":
-        out["wallpaper_animated"] = True
-        if (out.get("wallpaper_backend") or "png").lower() != "web":
-            out["wallpaper_backend"] = "png"
+    # Scale the user's chosen volume rather than replacing it, so the ambient
+    # volume slider always controls the level (the profile just biases it).
+    base = out.get("sound_volume", 25)
+    out["sound_volume"] = int(max(0, min(100, round(base * p["volume_scale"]))))
     return out

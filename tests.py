@@ -19,9 +19,7 @@ import weather
 import theme
 import json as _json
 import wallpaper
-import webwall
 import sound
-import perf
 import tasks as tasks_mod
 import autostart
 import engine
@@ -313,14 +311,18 @@ def test_profiles():
     warm = profiles.adjust_color((90, 120, 170), "relax")
     check("relax warms (r-b rises)", (warm[0] - warm[2]) > (90 - 170))
 
-    base = {"sound_volume": 25, "wallpaper_animated": True, "wallpaper_backend": "png"}
+    # Profiles SCALE the user's chosen volume (so the slider always matters),
+    # they never replace it with a fixed number.
+    base = {"sound_volume": 40}
     check("none overlay is identity", profiles.overlay_config(base, "none") is base)
     foc = profiles.overlay_config(base, "focus")
-    check("focus quiets sound", foc["sound_volume"] == 12)
-    check("focus stops motion", foc["wallpaper_animated"] is False)
-    cre = profiles.overlay_config(base, "creativity")
-    check("creativity enables motion", cre["wallpaper_animated"] is True)
-    check("overlay is non-destructive", base["sound_volume"] == 25)
+    check("focus quiets the slider volume", foc["sound_volume"] == 20)   # 40 * 0.5
+    rel = profiles.overlay_config(base, "relax")
+    check("relax lifts the slider volume", rel["sound_volume"] == 56)    # 40 * 1.4
+    # A different slider level scales differently — the slider is respected.
+    louder = profiles.overlay_config({"sound_volume": 80}, "focus")
+    check("higher slider => higher profile volume", louder["sound_volume"] == 40)
+    check("overlay is non-destructive", base["sound_volume"] == 40)
 
 
 def test_seasons():
@@ -404,24 +406,6 @@ def _gui_min_values():
             "p_long": 15, "p_cycles": 4, "manual_weather": "auto", "manual_time": "auto",
             "manual_theme_color": "auto", "run_at_login": False}
 
-
-def test_wallpaper_motion():
-    section("wallpaper motion (friendly chooser)")
-    c = config.default_config()
-    check("default is off", config.motion_from_config(c) == "off")
-    c["wallpaper_animated"] = True
-    check("animated png => smooth", config.motion_from_config(c) == "smooth")
-    c["wallpaper_backend"] = "web"
-    check("web backend => ultra", config.motion_from_config(c) == "ultra")
-
-    for m, backend in [("off", "png"), ("smooth", "png"), ("ultra", "web")]:
-        c2 = config.apply_motion(config.default_config(), m)
-        check(f"{m} sets backend {backend}", c2["wallpaper_backend"] == backend)
-        check(f"{m} round-trips", config.motion_from_config(c2) == m)
-    check("smooth enables animation",
-          config.apply_motion(config.default_config(), "smooth")["wallpaper_animated"] is True)
-    check("off disables animation",
-          config.apply_motion(config.default_config(), "off")["wallpaper_animated"] is False)
 
 
 def test_wallpaper_patterns():
@@ -551,19 +535,23 @@ def test_duck_other_audio():
     music.is_playing = lambda: False
     audiocheck.external_audio_active = lambda: False
     try:
-        off = config.default_config()             # feature off by default
-        check("off => never ducks", engine.other_audio_playing(off) is False)
+        off = config.default_config()             # external-audio toggle off
+        check("nothing playing => no duck", engine.other_audio_playing(off) is False)
 
+        # Priority: our music ALWAYS ducks ambient, even with the toggle off.
+        music.is_playing = lambda: True
+        check("our music ducks ambient even with toggle off",
+              engine.other_audio_playing(off) is True)
+        music.is_playing = lambda: False
+
+        # External-app audio only ducks ambient when the toggle is on.
+        audiocheck.external_audio_active = lambda: True
+        check("external audio ignored while toggle off",
+              engine.other_audio_playing(off) is False)
         on = config.default_config()
         on["pause_when_other_audio"] = True
-        check("on + nothing playing => no duck", engine.other_audio_playing(on) is False)
-
-        music.is_playing = lambda: True
-        check("our music playing => duck", engine.other_audio_playing(on) is True)
-
-        music.is_playing = lambda: False
-        audiocheck.external_audio_active = lambda: True
-        check("external audio => duck", engine.other_audio_playing(on) is True)
+        check("external audio ducks when toggle on",
+              engine.other_audio_playing(on) is True)
         audiocheck.external_audio_active = lambda: None   # unknown platform
         check("unknown => no duck", engine.other_audio_playing(on) is False)
     finally:
@@ -612,6 +600,62 @@ def test_duck_other_audio():
          sound.play_ambient, sound.stop_sound, sound.set_volume,
          sound.pick_base, weather.get_weather, ac.external_audio_active,
          music.is_playing) = saved
+
+
+def test_audio_priority():
+    section("audio priority: chime > music > ambient")
+
+    class FakeMusic:
+        def __init__(self, busy, vol):
+            self._busy, self.vol = busy, vol
+        def get_busy(self):
+            return self._busy
+        def get_volume(self):
+            return self.vol
+        def set_volume(self, v):
+            self.vol = v
+
+    class FakeMixer:
+        def __init__(self, music):
+            self.music = music
+
+    class FakeSnd:
+        def __init__(self, v):
+            self.vol = v
+        def set_volume(self, v):
+            self.vol = v
+
+    o = (sound._mixer, sound.current_sound, sound._current_volume, sound._music_prev_vol)
+    try:
+        # Music + ambient both playing: a chime ducks BOTH, then restores.
+        fm = FakeMusic(busy=True, vol=0.6)
+        sound._mixer = FakeMixer(fm)
+        amb = FakeSnd(0.25)
+        sound.current_sound = amb
+        sound._current_volume = 0.25
+        sound._music_prev_vol = None
+
+        sound._duck_for_chime()
+        check("chime ducks the music stream", fm.vol < 0.6)
+        check("chime ducks the ambient loop", amb.vol < 0.25)
+        check("music level remembered for restore", sound._music_prev_vol == 0.6)
+
+        sound._restore_after_chime()
+        check("music restored to its level", abs(fm.vol - 0.6) < 1e-9)
+        check("ambient restored to its level", abs(amb.vol - 0.25) < 1e-9)
+        check("duck state cleared", sound._music_prev_vol is None)
+
+        # No music playing: nothing to duck/remember for the music stream.
+        fm2 = FakeMusic(busy=False, vol=0.5)
+        sound._mixer = FakeMixer(fm2)
+        sound.current_sound = None
+        sound._music_prev_vol = None
+        sound._duck_for_chime()
+        check("silent music not ducked", abs(fm2.vol - 0.5) < 1e-9)
+        check("no duck state when music silent", sound._music_prev_vol is None)
+    finally:
+        (sound._mixer, sound.current_sound, sound._current_volume,
+         sound._music_prev_vol) = o
 
 
 def test_sound_variants_and_modes():
@@ -757,46 +801,6 @@ def test_autostart():
 # ---------------------------------------------------------
 # web wallpaper backend
 # ---------------------------------------------------------
-def test_webwall():
-    section("web wallpaper backend")
-    with tempfile.TemporaryDirectory() as d:
-        orig = webwall.WEB_DIR
-        webwall.WEB_DIR = d
-        try:
-            # ensure_assets writes a versioned, self-contained HTML page.
-            p = webwall.ensure_assets()
-            check("index.html created", os.path.isfile(p))
-            with open(p) as f:
-                html = f.read()
-            check("html is versioned", f"etc-wallpaper v{webwall.HTML_VERSION}" in html)
-            check("html has canvas + loop", "<canvas" in html and "requestAnimationFrame" in html)
-            mtime = os.path.getmtime(p)
-            webwall.ensure_assets()   # idempotent: same version => no rewrite
-            check("ensure_assets idempotent", os.path.getmtime(p) == mtime)
-
-            # build_state: keys present, cold => warmth, colours are RGB triples.
-            st = webwall.build_state(40, 80, 180, 0.8, "rain", -5, 0.4, True, True)
-            for k in ("condition", "top", "bottom", "base", "brightness", "warmth"):
-                check(f"state has {k}", k in st)
-            check("state condition normalised", st["condition"] == "rain")
-            check("cold => warmth applied", st["warmth"] > 0)
-            check("top is rgb triple", len(st["top"]) == 3
-                  and all(0 <= v <= 255 for v in st["top"]))
-            warm_st = webwall.build_state(40, 80, 180, 0.8, "rain", 25, 0.4, True, True)
-            check("warm => no warmth", warm_st["warmth"] == 0)
-
-            # write_state round-trips as valid JSON.
-            webwall.write_state(st)
-            with open(webwall.state_path()) as f:
-                back = _json.load(f)
-            check("weather.json round-trips", back["condition"] == "rain")
-        finally:
-            webwall.WEB_DIR = orig
-
-
-# ---------------------------------------------------------
-# animation governor + animated wallpaper
-# ---------------------------------------------------------
 def test_bugfixes():
     section("regression tests (fixed bugs)")
     import datetime as dt
@@ -909,6 +913,48 @@ def test_bugfixes():
          sound.pick_base, weather.get_weather) = saved
 
 
+def test_city_change_refetch():
+    section("changing city refetches weather immediately")
+    import datetime as dt
+    o_get = weather.get_weather
+    sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
+    ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
+    # Rain in the south, clear in the north — keyed by latitude sign.
+    def fake(lat, lon):
+        return {"condition": "rain" if lat < 0 else "clear",
+                "sunrise": sr, "sunset": ss, "is_day": True, "temperature": 15,
+                "feels_like": 15, "humidity": 50, "uv_index": 3, "uv_index_max": 5,
+                "pressure": 1010, "rain": 0, "precip_chance": 0, "wind_speed": 5,
+                "wind_gust": 8, "wind_dir": 180, "cloud_cover": 10}
+    weather.get_weather = fake
+    try:
+        eng = engine.Engine()
+        cfg = config.default_config()
+        cfg["features"] = {"dynamic_theme": False, "wallpaper": False,
+                           "ambient_sound": False, "tasks": False}
+        cfg["weather_refresh_seconds"] = 600      # long cache window
+        now = dt.datetime.combine(dt.date.today(), dt.time(12, 0))
+        cfg["location"] = {"lat": -33.8, "lon": 151.2, "name": "Sydney"}
+        s1 = eng.step(cfg, None, now=now)
+        check("first city fetched", s1["condition"] == "rain")
+        # Same `now` (well inside the cache window): the OLD code would keep the
+        # stale rain; the fix refetches because the location changed.
+        cfg["location"] = {"lat": 51.5, "lon": -0.1, "name": "London"}
+        s2 = eng.step(cfg, None, now=now)
+        check("city change refetches (not stuck on old weather)",
+              s2["condition"] == "clear")
+        # Same city again within the window => still cached (no needless refetch).
+        calls = {"n": 0}
+        def counted(lat, lon):
+            calls["n"] += 1
+            return fake(lat, lon)
+        weather.get_weather = counted
+        eng.step(cfg, None, now=now)
+        check("same city stays cached", calls["n"] == 0)
+    finally:
+        weather.get_weather = o_get
+
+
 def test_task_recolors_now():
     section("task changes the background promptly")
     import datetime as dt
@@ -968,30 +1014,32 @@ def test_sun_tracking():
     section("sun tracks the real clock")
     import datetime as dt
     captured = {}
-    o = wallpaper.apply_weather_wallpaper
+    o_wall, o_get = wallpaper.apply_weather_wallpaper, weather.get_weather
     wallpaper.apply_weather_wallpaper = lambda *a, **k: captured.update(sun=k.get("sun")) or True
+    sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
+    ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
+    weather.get_weather = lambda *a, **k: {
+        "condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
+        "temperature": 18, "feels_like": 18, "humidity": 50, "uv_index": 3,
+        "uv_index_max": 5, "pressure": 1010, "rain": 0, "precip_chance": 0,
+        "wind_speed": 5, "wind_gust": 8, "wind_dir": 180, "cloud_cover": 10}
     try:
-        eng = engine.Engine()
-        now = dt.datetime.now()      # animate_frame reads the real clock
-        eng._last_render = {
-            "r": 80, "g": 160, "b": 255, "brightness": 1.0, "tint": 0.7,
-            "shift": 0.0, "condition": "clear", "temperature": None,
-            "patterns": True, "warmth": True, "sun": 0.99, "multi": True,
-            "phase": None, "sunrise": now - dt.timedelta(hours=1),
-            "sunset": now + dt.timedelta(hours=1)}
-        eng.animate_frame(0.0)
-        # sunrise=now-1h, sunset=now+1h -> live fraction ~0.5, not the stale 0.99.
-        check("animated frame uses live sun (not stale cache)",
-              captured.get("sun") is not None and abs(captured["sun"] - 0.5) < 0.2)
+        # A step computes the sun position from `now` and forwards it to the
+        # wallpaper — so the sun follows the real clock, not a stale value.
+        cfg = config.default_config()
+        cfg["features"]["dynamic_theme"] = False
+        engine.Engine().step(cfg, None, now=dt.datetime.combine(dt.date.today(), dt.time(13, 0)))
+        expect = theme.celestial_fraction(None, sr, ss,
+                                          dt.datetime.combine(dt.date.today(), dt.time(13, 0)))
+        check("step forwards the live sun to the wallpaper",
+              captured.get("sun") is not None and abs(captured["sun"] - expect) < 0.02)
 
         # Time passing moves the sun west (fixed times, clock-independent).
-        sr = dt.datetime(2026, 6, 1, 6, 0)
-        ss = dt.datetime(2026, 6, 1, 20, 0)
-        s1 = theme.celestial_fraction(None, sr, ss, dt.datetime(2026, 6, 1, 10, 0))
-        s2 = theme.celestial_fraction(None, sr, ss, dt.datetime(2026, 6, 1, 14, 0))
+        s1 = theme.celestial_fraction(None, sr, ss, dt.datetime.combine(dt.date.today(), dt.time(10, 0)))
+        s2 = theme.celestial_fraction(None, sr, ss, dt.datetime.combine(dt.date.today(), dt.time(14, 0)))
         check("sun advances with time", s2 > s1)
     finally:
-        wallpaper.apply_weather_wallpaper = o
+        wallpaper.apply_weather_wallpaper, weather.get_weather = o_wall, o_get
 
 
 def test_wallpaper_no_revert():
@@ -1060,119 +1108,29 @@ def test_wallpaper_force_refresh():
          sound.pick_variant, weather.get_weather) = saved
 
 
-def test_governor():
-    section("animation governor")
-
-    # Calm machine: keeps rendering, never suspends, sleeps ~ 1/fps.
-    g = perf.AdaptiveGovernor(target_fps=8, load_ceiling=0.85)
-    for _ in range(6):
-        g.observe(0.01, 0.2)          # cheap frames, low load
-    check("calm keeps rendering", g.render and not g.suspended)
-    check("calm sleeps near frame budget", abs(g.sleep - 1 / 8) < 1e-6)
-
-    # High system load for `patience` samples -> throttle then suspend.
-    g = perf.AdaptiveGovernor(target_fps=8, load_ceiling=0.85, patience=3)
-    g.observe(0.01, 1.5)
-    check("first overload throttles, not suspended",
-          not g.suspended and g.sleep > 1 / 8)
-    g.observe(0.01, 1.5)
-    g.observe(0.01, 1.5)
-    check("sustained load suspends", g.suspended and not g.render)
-
-    # Slow frames alone (no load signal) also suspend.
-    g = perf.AdaptiveGovernor(target_fps=10, load_ceiling=0.85, patience=2)
-    g.observe(1.0, None)              # 1s frame vs 0.1s budget
-    g.observe(1.0, None)
-    check("expensive frames suspend without load avg", g.suspended)
-
-    # Recovery: once calm for `recover` probes, resume rendering.
-    g = perf.AdaptiveGovernor(target_fps=8, load_ceiling=0.85,
-                              patience=1, recover=2)
-    g.observe(0.01, 2.0)             # suspend immediately
-    check("suspended under heavy load", g.suspended)
-    g.observe(0.0, 0.1)              # probe 1 (no render while suspended)
-    g.observe(0.0, 0.1)              # probe 2
-    check("resumes after load clears", not g.suspended and g.render)
-
-    # Live reconfigure from the GUI.
-    g.configure(target_fps=15)
-    check("configure updates budget", abs(g.budget - 1 / 15) < 1e-6)
-
-    # system_load is per-core and non-negative (or None on Windows).
-    load = perf.system_load()
-    check("system_load sane", load is None or load >= 0)
-
-
-def test_animated_wallpaper():
-    section("animated wallpaper (mutation stubbed)")
-    calls = {"apply": 0}
-    o_wall = wallpaper.apply_weather_wallpaper
-    o_theme = theme.apply_theme_color
-    o_play, o_stop = sound.play_ambient, sound.stop_sound
-    wallpaper.apply_weather_wallpaper = lambda *a, **k: calls.__setitem__("apply", calls["apply"] + 1) or True
-    theme.apply_theme_color = lambda *a, **k: "stub"
-    sound.play_ambient = lambda *a, **k: None
-    sound.stop_sound = lambda *a, **k: None
+def test_wallpaper_agent_warmup():
+    section("macOS wallpaper agent restarted once (no grey flash per change)")
+    import sys as _sys
+    if _sys.platform != "darwin":
+        check("skipped (not macOS)", True)
+        return
+    o = (wallpaper._set_wallpaper_macos, wallpaper._refresh_wallpaper_agent_macos,
+         wallpaper._applied_path, wallpaper._agent_warmed)
+    calls = {"refresh": 0}
+    wallpaper._set_wallpaper_macos = lambda path, multi=True: True
+    wallpaper._refresh_wallpaper_agent_macos = lambda: calls.__setitem__(
+        "refresh", calls["refresh"] + 1)
+    wallpaper._applied_path = None
+    wallpaper._agent_warmed = False
     try:
-        cfg = config.default_config()
-        cfg["manual_weather"] = "rain"        # avoid network
-        cfg["wallpaper_animated"] = True
-
-        check("animation_active on when enabled", engine.animation_active(cfg))
-        cfg2 = config.default_config()
-        cfg2["manual_weather"] = "rain"
-        check("animation_active off by default", not engine.animation_active(cfg2))
-
-        eng = engine.Engine()
-        # A full step in animated mode caches frame inputs but does NOT apply
-        # the wallpaper itself (the governor loop owns that).
-        eng.step(cfg, None, animating=True)
-        check("animated step skips static apply", calls["apply"] == 0)
-        check("render inputs cached", eng._last_render is not None
-              and eng._last_render["condition"] == "rain")
-
-        # A governed frame renders exactly one wallpaper.
-        eng.animate_frame(2.0)
-        check("animate_frame applies one frame", calls["apply"] == 1)
-
-        # Successive frames advance the motion phase.
-        p1 = (1.0 % engine.ANIM_PERIOD) / engine.ANIM_PERIOD
-        p2 = (4.0 % engine.ANIM_PERIOD) / engine.ANIM_PERIOD
-        check("phase advances with time", p1 != p2)
-
-        # No cached inputs yet => nothing to draw.
-        check("fresh engine animates nothing", engine.Engine().animate_frame(0.0) is False)
-
-        # --- web backend: writes JSON, never sets a PNG desktop ----------
-        with tempfile.TemporaryDirectory() as d:
-            o_web = webwall.WEB_DIR
-            webwall.WEB_DIR = d
-            try:
-                webcfg = config.default_config()
-                webcfg["manual_weather"] = "storm"
-                webcfg["wallpaper_backend"] = "web"
-                webcfg["wallpaper_animated"] = True   # should NOT drive in-app loop
-                check("web backend disables in-app animation loop",
-                      not engine.animation_active(webcfg))
-                calls["apply"] = 0
-                eng2 = engine.Engine()
-                st = eng2.step(webcfg, None)
-                check("web step sets no PNG wallpaper", calls["apply"] == 0)
-                check("web step wrote feed", os.path.isfile(webwall.state_path()))
-                check("web step reported in status",
-                      any("web" in a for a in st["applied"]))
-                # Unchanged state => no rewrite second time.
-                mt = os.path.getmtime(webwall.state_path())
-                eng2.step(webcfg, None)
-                check("web feed not rewritten when unchanged",
-                      os.path.getmtime(webwall.state_path()) == mt)
-            finally:
-                webwall.WEB_DIR = o_web
+        wallpaper.set_wallpaper("/tmp/a.png")
+        wallpaper.set_wallpaper("/tmp/b.png")     # weather change
+        wallpaper.set_wallpaper("/tmp/c.png")     # weather change
+        check("agent restarted exactly once across many changes",
+              calls["refresh"] == 1)
     finally:
-        wallpaper.apply_weather_wallpaper = o_wall
-        theme.apply_theme_color = o_theme
-        sound.play_ambient = o_play
-        sound.stop_sound = o_stop
+        (wallpaper._set_wallpaper_macos, wallpaper._refresh_wallpaper_agent_macos,
+         wallpaper._applied_path, wallpaper._agent_warmed) = o
 
 
 # ---------------------------------------------------------
@@ -1426,22 +1384,21 @@ def main():
     test_transitions()
     test_high_contrast()
     test_wallpaper()
-    test_wallpaper_motion()
     test_wallpaper_patterns()
     test_sound()
     test_sound_variants_and_modes()
     test_music()
     test_duck_other_audio()
+    test_audio_priority()
     test_tasks()
     test_autostart()
-    test_webwall()
-    test_governor()
     test_bugfixes()
+    test_city_change_refetch()
     test_task_recolors_now()
     test_sun_tracking()
     test_wallpaper_no_revert()
     test_wallpaper_force_refresh()
-    test_animated_wallpaper()
+    test_wallpaper_agent_warmup()
     test_engine()
     test_pomodoro()
     test_clocks()
