@@ -392,7 +392,8 @@ class Engine:
         hc = (cfg.get("accessibility_mode") or "none").lower() == "high_contrast"
         status["season"] = season
         manual_color = cfg.get("manual_theme_color")
-        if manual_color and len(manual_color) == 3:
+        is_manual = bool(manual_color and len(manual_color) == 3)
+        if is_manual:
             tr, tg, tb = manual_color
             brightness = theme.phase_light(phase)[0] if phase else (
                 theme.NIGHT_BRIGHTNESS if is_night else 1.0)
@@ -407,8 +408,10 @@ class Engine:
             status["color_source"] = "computed"
 
         # Gradual transitions: ease the *displayed* colour toward the target so
-        # weather/time changes cross-fade instead of snapping.
-        smooth = bool(cfg.get("smooth_transitions", True))
+        # weather/time changes cross-fade instead of snapping. A manually picked
+        # colour is a deliberate choice, so it snaps to full strength at once
+        # (no cross-fade) — otherwise the picker looks like it does nothing.
+        smooth = bool(cfg.get("smooth_transitions", True)) and not is_manual
         dur = max(0, int(cfg.get("theme_transition_seconds", 8)))
         if smooth and dur > 0:
             dt = (now - self._eased_at).total_seconds() if self._eased_at else dur

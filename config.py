@@ -9,7 +9,11 @@ import copy
 import json
 import os
 
-CONFIG_FILE = "config.json"
+# Absolute path next to this module, so the app reads/writes the SAME config
+# no matter which directory it's launched from. (A relative "config.json" would
+# resolve against the launch directory, silently creating a second config when
+# started from the parent folder — the desktop then never seemed to change.)
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 # Master defaults. Every setting the app understands lives here.
 DEFAULTS = {
