@@ -110,7 +110,7 @@ Example (London):
 | `manual_weather` | `auto`/`clear`/`cloud`/`rain`/`storm` | `"auto"` | Force a weather condition, or `auto` for live data. |
 | `manual_time` | `auto` / `sunrise` / `morning` / `midday` / `afternoon` / `sunset` / `dusk` / `night` | `"auto"` | Force a time-of-day phase (tints the theme + wallpaper and sets brightness / Dark mode). `auto` follows the real sun. Legacy `day` = `midday`. |
 | `manual_theme_color` | `null` or `[r,g,b]` | `null` | Force an exact accent colour; `null` = derive from weather. |
-| `run_at_login` | bool | `false` | Reflects the run-at-login launcher state. |
+| `run_at_login` | bool | `false` | Reflects the run-at-login launcher state. Headless mode keeps non-audio features active; ambience waits for an open GUI. |
 
 ## Engine cadence
 

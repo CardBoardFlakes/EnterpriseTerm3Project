@@ -52,8 +52,9 @@ means stopping Flow music resumes ambience even when the music mixer remains
 open but silent.
 
 Opening the GUI while the run-at-login background process is active is safe:
-both processes share one engine owner. If an older build only plays ambience
-after the GUI closes, quit all Flow processes once and reopen the updated app.
+both processes share one engine owner. Ambient sound runs only while at least
+one Flow window is open. Closing the last window signals that owner to stop
+ambience; the headless theme, wallpaper, weather, and reminders keep running.
 
 ---
 

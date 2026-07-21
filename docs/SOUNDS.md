@@ -47,8 +47,9 @@ first.)
 > `clearday`/`clearnight`.
 
 > The `sounds/` folder is found automatically next to the app, so your files
-> are picked up no matter where you launch from. Sound plays while the app or
-> `--background` engine is running (`--once` exits immediately).
+> are picked up no matter where you launch from. Ambience plays while a Flow
+> window is open and stops when the last window closes. The run-at-login
+> background engine remains silent until a window opens.
 
 ---
 
@@ -115,11 +116,11 @@ then resumes ambience after the other audio stops.
 
 Flow music priority works without `pycaw` and without the external-audio option.
 If GUI and run-at-login background modes overlap, they share one engine owner.
-Opening or closing the GUI therefore does not stop, duplicate, or restart the
-ambient loop. Flow music priority is also shared across those processes. Flow
-also excludes its own GUI and background audio devices from “other audio”
-detection, so a mixer that remains open after music stops cannot prevent the
-ambience from resuming.
+Opening the GUI starts ambience through that owner; closing the last Flow window
+stops it while leaving headless theme, wallpaper, weather, and reminders active.
+Flow music priority is shared across those processes. Flow also excludes its
+own GUI and background audio devices from “other audio” detection, so a mixer
+that remains open after music stops cannot prevent ambience from resuming.
 
 ---
 

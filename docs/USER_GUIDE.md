@@ -166,7 +166,9 @@ headless launcher that runs `main.py --background` when you log in:
 
 Untick it to remove the launcher. It runs the engine without a window; open the
 GUI any time to change settings (the background loop reloads `config.json` each
-cycle, so changes apply without a restart).
+cycle, so changes apply without a restart). Theme, wallpaper, weather, and task
+reminders stay active headlessly. Ambient sound plays only while at least one
+Flow window is open and stops when the last window closes.
 
 ---
 
@@ -177,9 +179,9 @@ python main.py --once        # run one engine cycle, then exit
 python main.py --background  # run the engine loop forever (Ctrl-C to stop)
 ```
 
-`--once` is useful for scripting or a quick theme/wallpaper test. It may start
-ambience during that cycle, but audio ends when the process exits.
-`--background` is what the run-at-login launcher uses.
+`--once` is useful for scripting or a quick theme/wallpaper test; its process
+ends after that cycle. `--background` is what the run-at-login launcher uses.
+Headless background mode does not play ambient sound until the GUI opens.
 Opening the GUI at the same time does not start a competing engine. The two
 processes share one engine owner, and GUI changes wake it immediately.
 

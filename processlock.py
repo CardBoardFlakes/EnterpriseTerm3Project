@@ -1,12 +1,17 @@
 """Small cross-platform file locks for coordinating Flow processes."""
 
 import hashlib
+import glob
 import os
 import tempfile
 
 
+def _namespace_digest(namespace):
+    return hashlib.sha256(os.path.abspath(namespace).encode()).hexdigest()[:16]
+
+
 def path(name, namespace):
-    digest = hashlib.sha256(os.path.abspath(namespace).encode()).hexdigest()[:16]
+    digest = _namespace_digest(namespace)
     return os.path.join(tempfile.gettempdir(), f"flow-{name}-{digest}.lock")
 
 
@@ -68,3 +73,35 @@ class ProcessFileLock:
             probe.release()
             return False
         return True
+
+
+class ProcessPresence:
+    """Track whether one or more processes of a named kind are alive."""
+
+    def __init__(self, name, namespace, pid=None):
+        self.name = name
+        self.namespace = namespace
+        self.pid = os.getpid() if pid is None else pid
+        self._lock = ProcessFileLock(
+            path(f"{self.name}-{self.pid}", self.namespace))
+
+    def register(self):
+        return self._lock.acquire()
+
+    def unregister(self):
+        own_path = self._lock.path
+        self._lock.release()
+        try:
+            os.remove(own_path)
+        except OSError:
+            pass
+
+    def active(self):
+        if self._lock.owned:
+            return True
+        digest = _namespace_digest(self.namespace)
+        pattern = os.path.join(
+            tempfile.gettempdir(), f"flow-{self.name}-*-{digest}.lock")
+        return any(
+            ProcessFileLock(candidate).held_elsewhere()
+            for candidate in glob.glob(pattern))

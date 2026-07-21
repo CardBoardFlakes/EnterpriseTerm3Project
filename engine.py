@@ -284,6 +284,20 @@ def _new_engine_lock(config_path):
         processlock.path("engine", config_path))
 
 
+def _new_gui_presence(config_path=config.CONFIG_FILE):
+    return processlock.ProcessPresence("gui", config_path)
+
+
+def _background_config(cfg, gui_open):
+    """Keep headless features running while making ambience window-bound."""
+    if gui_open:
+        return cfg
+    background = dict(cfg)
+    background["features"] = dict(cfg.get("features", {}))
+    background["features"]["ambient_sound"] = False
+    return background
+
+
 class Engine:
     """
     Holds state between steps so each step is cheap:
@@ -623,6 +637,7 @@ def run_forever(config_path=config.CONFIG_FILE, tasks_path=tasks_mod.TASKS_FILE)
     print("[engine] Background mode started.")
     eng = Engine()
     lease = _new_engine_lock(config_path)
+    gui_presence = _new_gui_presence(config_path)
     is_owner = False
     last_full = None
     wake_stamp = _engine_wake_stamp(config_path)
@@ -653,7 +668,8 @@ def run_forever(config_path=config.CONFIG_FILE, tasks_path=tasks_mod.TASKS_FILE)
             tick_iv = max(5, int((cfg or {}).get("tick_interval_seconds", 30)))
             full_iv = 0 if cfg is None else _engine_poll_interval(cfg, eng, tick_iv)
             if last_full is None or (mono - last_full) >= full_iv:
-                cfg = config.load_config(config_path)
+                cfg = _background_config(
+                    config.load_config(config_path), gui_presence.active())
                 store = tasks_mod.TaskStore(tasks_path)
                 tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
                 try:

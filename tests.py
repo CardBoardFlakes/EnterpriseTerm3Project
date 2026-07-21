@@ -666,6 +666,34 @@ def test_process_coordination():
         check("engine wake signal crosses processes",
               engine._engine_wake_stamp(cfg_path) != before)
 
+        first_gui = processlock.ProcessPresence(
+            "gui-test", cfg_path, pid=os.getpid() + 1000000)
+        second_gui = processlock.ProcessPresence(
+            "gui-test", cfg_path, pid=os.getpid() + 1000001)
+        observer = processlock.ProcessPresence(
+            "gui-test", cfg_path, pid=os.getpid() + 1000002)
+        try:
+            check("no GUI process is initially present", observer.active() is False)
+            check("first GUI process registers", first_gui.register() is True)
+            check("GUI presence is visible across processes", observer.active() is True)
+            check("second GUI process registers", second_gui.register() is True)
+            first_gui.unregister()
+            check("one closing GUI keeps remaining GUI present",
+                  observer.active() is True)
+        finally:
+            first_gui.unregister()
+            second_gui.unregister()
+        check("last closing GUI clears presence", observer.active() is False)
+
+        cfg = config.default_config()
+        background = engine._background_config(cfg, gui_open=False)
+        check("headless background disables ambience only",
+              background["features"]["ambient_sound"] is False
+              and background["features"]["wallpaper"] is True
+              and cfg["features"]["ambient_sound"] is True)
+        check("open GUI preserves ambient config",
+              engine._background_config(cfg, gui_open=True) is cfg)
+
     import music
 
     class PeerMusicLock:
