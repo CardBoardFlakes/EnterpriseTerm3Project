@@ -8,7 +8,9 @@ of day. It's optional — if `pygame` isn't installed, sound is silently skipped
 - [Using your own sounds](#using-your-own-sounds)
 - [Variants (multiple clips per condition)](#variants-multiple-clips-per-condition)
 - [Continuous playback](#continuous-playback)
+- [Pause when other audio plays](#pause-when-other-audio-plays)
 - [Placeholder sounds](#placeholder-sounds)
+- [Play your own music](#play-your-own-music)
 
 ---
 
@@ -96,19 +98,18 @@ restarts it.
 
 ## Pause when other audio plays
 
-Tick **Pause ambient when other audio is playing** (Settings → Sound) and the
-weather ambience automatically stops while something else is playing, then
-resumes when it stops. It ducks for:
+Flow's own music player always takes priority: starting a song stops weather
+ambience, and stopping or pausing the song starts ambience again.
 
-- **your own music player** (in the Music tab) — always, reliably;
-- **another app**, best-effort per platform:
-  - **macOS** — Spotify / Apple Music that are already running (their player
-    state is `playing`). Browser/YouTube audio can't be detected this way.
-  - **Windows** — essentially any app, if [`pycaw`](https://pypi.org/project/pycaw/)
-    is installed (`pip install pycaw`); without it, only your own music ducks.
+Tick **Pause ambient when other audio is playing** (Settings → Sound) to extend
+that behavior to detectable external audio:
 
-So on macOS it reliably ducks for your own music and Spotify/Apple Music; other
-sources may not be detected.
+- **macOS** — Spotify / Apple Music that are already running (their player
+  state is `playing`). Browser/YouTube audio can't be detected this way.
+- **Windows** — essentially any app, if [`pycaw`](https://pypi.org/project/pycaw/)
+  is installed (`pip install pycaw`); without it, external audio is not detected.
+
+Flow music priority works without `pycaw` and without the external-audio option.
 
 ---
 
@@ -128,16 +129,20 @@ Sound not playing at all? See
 
 ## Play your own music
 
-Separate from the weather ambience, you can play your **own downloaded songs**
-in the background while you work. Open **⏱ Focus & Tasks → Music**:
+You can play your **own downloaded songs** in the background while you work.
+Open **⏱ Focus & Tasks → Music**:
 
 - **Add songs…** — pick `.mp3` / `.ogg` / `.wav` files; they're copied into the
   `music/` folder (next to the app). Or drop files there yourself and hit
   **Refresh**.
 - **Play / ⏸ / ⏹ / ⏮ / ⏭** — play the selected track (double-click also plays)
   and move through the playlist manually.
-- **Music volume** — independent of the ambient volume; the two mix together.
+- **Music volume** — saved separately from ambient volume. Ambience pauses
+  while music is actively playing.
 - **Open music folder** — reveal the folder in your file manager.
+
+Music keeps playing while Flow is in the background, but stops when the main
+app process exits. Tracks do not auto-advance at the end; use Previous/Next.
 
 Needs `pygame` (same as ambient sound). `.mp3` and `.ogg` stream well; some
 `.flac`/`.m4a` files may not load depending on your platform's codecs.

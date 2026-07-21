@@ -3,6 +3,7 @@
 A cross-platform (macOS + Windows) desktop app that makes your computer reflect
 the weather and time of day outside — accent colour, desktop wallpaper, and
 subtle ambient sound — plus a built-in Pomodoro timer and task scheduler.
+It also includes a countdown timer, stopwatch, and local music player.
 
 It is dependency-light (weather + audio are optional; wallpaper images are
 generated with the Python standard library, no Pillow) and stays cheap by only
@@ -45,12 +46,12 @@ See the full walkthrough in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 | **Weather wallpaper** | A sky-gradient background per condition, with weather patterns (rain, sun, clouds, stars) and a cosy warm tint when it's cold. |
 | **Ambient sound** | Relaxing weather/time soundscapes that loop continuously. Add your own files or variants; windy skies use the cloudy ambience. |
 | **Music player** | Play your own downloaded songs (mp3/ogg/wav/flac/m4a) in the background, with playlist controls and a separate volume. |
-| **Auto-duck** | Optionally pause the ambient sound while other audio plays (your music player, or best-effort Spotify/Apple Music on macOS / any app on Windows). |
+| **Audio priority** | Flow music always pauses ambience. An optional setting also pauses ambience for detectable external audio (best-effort Spotify/Apple Music on macOS, or any app on Windows with `pycaw`). |
 | **Timers** | A Timers tab with three modes: **Pomodoro** (work/break cycles), a plain **countdown Timer**, and a **Stopwatch** with laps. |
 | **Tasks & schedules** | Daily or one-off reminders that show a notification or play a chime. |
 | **Live weather panel** | Temperature, feels-like, humidity, UV index (with risk band), wind + gusts, rain chance and pressure. |
-| **Manual overrides** | Force a weather condition, time of day, or exact accent colour — the live data keeps showing the *real* outside conditions. |
-| **Time-of-day UI** | The app window itself follows the day: a light theme by day, dark at night, with a phase-tinted accent — matching the wallpaper/OS. |
+| **Manual overrides** | Force a weather condition, time of day, or exact accent colour. Measurements stay live; a forced weather label is marked `(manual)`. |
+| **Time-of-day UI** | The app window follows the day with a light theme by day and dark theme at night; its palette uses the active theme accent when the mode changes. |
 | **Location privacy** | No automatic location detection; only the coordinates for your selected city are sent for weather data. |
 | **Run at login** | Optional auto-start (macOS LaunchAgent / Windows Run key). |
 
@@ -63,9 +64,9 @@ Detailed, task-focused guides live in **[`docs/`](docs/)**:
 | Guide | What's inside |
 |---|---|
 | [User guide](docs/USER_GUIDE.md) | First launch, the Dashboard & Settings tabs, the Focus & Tasks window, and running at login. |
-| [Wallpaper guide](docs/WALLPAPER.md) | The static weather wallpaper: weather patterns, sun/moon movement, and the cold-weather warm tint. |
-| [Sound guide](docs/SOUNDS.md) | Built-in ambience, file names, adding your own clips, and variants. |
-| [Tasks & timer guide](docs/TASKS_AND_TIMER.md) | Pomodoro usage and creating daily / one-off scheduled tasks. |
+| [Wallpaper guide](docs/WALLPAPER.md) | Generated PNG wallpapers: weather patterns, sun/moon movement, subtle drift, and cold-weather warmth. |
+| [Sound guide](docs/SOUNDS.md) | Built-in ambience, custom clips and variants, audio priority, and local music. |
+| [Tasks & timers guide](docs/TASKS_AND_TIMER.md) | Pomodoro, countdown, stopwatch, and daily / one-off reminders. |
 | [Configuration reference](docs/CONFIGURATION.md) | Every `config.json` key, defaults, and where files are stored. |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | GUI, audio, wallpaper, accent-colour, and weather issues. |
 
@@ -75,7 +76,7 @@ Detailed, task-focused guides live in **[`docs/`](docs/)**:
 
 ```bash
 python main.py              # settings GUI (default)
-python main.py --once       # apply once, then exit
+python main.py --once       # run one engine cycle, then exit
 python main.py --background # headless loop (what "run at login" launches)
 python tests.py             # run the test suite
 ```
@@ -102,10 +103,10 @@ computer actually is. For custom coordinates, see the
 
 **What leaves the machine:** only the configured `lat`/`lon` → Open-Meteo, over
 HTTPS, about once every 10 minutes. No API key or account is used. Everything
-else (settings, tasks, reminder text, audio) stays local in plaintext
-(`config.json`, `tasks.json`, `~/.environment_theme_controller/`). There is no
-telemetry or analytics. Coordinates are low-sensitivity **personal** data — for
-privacy, use a nearby town's coordinates rather than your exact address.
+else stays local: settings and reminders are plaintext JSON; audio and generated
+wallpapers are ordinary local files. There is no telemetry or analytics.
+Coordinates are low-sensitivity **personal** data — for privacy, use a nearby
+town's coordinates rather than your exact address.
 
 ---
 
@@ -125,7 +126,7 @@ privacy, use a nearby town's coordinates rather than your exact address.
 | `music.py` | Background music player for your own songs |
 | `audiocheck.py` | Best-effort detection of audio from other apps (for auto-duck) |
 | `pomodoro.py` | Pomodoro timer state machine |
-| `clocks.py` | Stopwatch + countdown timer |
+| `clocks.py` | Stopwatch and countdown timer state machines |
 | `tasks.py` | Tasks & schedules store |
 | `activity.py` | Idle-time detection |
 | `autostart.py` | Run-at-login (LaunchAgent / Run key) |
@@ -153,8 +154,8 @@ python3 -m ruff check .      # 0 issues
 A 388-check headless test suite covering config,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
-/ warmth, sound
-selection / variants / modes, tasks, autostart, the Pomodoro timer, the GUI
+/ warmth, sound selection / variants / continuous-loop recovery, tasks,
+autostart, all three timer modes, the GUI
 value mapping + display helpers (icons, temperature, UV band, live-data line),
 idle detection, other-audio detection, desktop notifications, and the engine's
 pure helpers + change-guards. All system-mutating calls

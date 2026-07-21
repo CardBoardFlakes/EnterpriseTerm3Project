@@ -6,9 +6,9 @@ Guides for the Flow. Start with the
 | Guide | Read it when you want to… |
 |---|---|
 | **[User guide](USER_GUIDE.md)** | Learn the whole app — tabs, automatic apply, the Focus & Tasks window, run-at-login. |
-| **[Wallpaper guide](WALLPAPER.md)** | Understand the static weather wallpaper — patterns, sun/moon movement, and cold-weather warmth. |
-| **[Sound guide](SOUNDS.md)** | Understand built-in loops, replace sounds, or add variants. |
-| **[Tasks & timer guide](TASKS_AND_TIMER.md)** | Use the Pomodoro timer and schedule daily / one-off tasks. |
+| **[Wallpaper guide](WALLPAPER.md)** | Understand generated PNG wallpapers — patterns, drift, sun/moon movement, and cold-weather warmth. |
+| **[Sound guide](SOUNDS.md)** | Understand ambience, replace sounds, add variants, and play local music. |
+| **[Tasks & timer guide](TASKS_AND_TIMER.md)** | Use Pomodoro, countdown, stopwatch, and daily / one-off reminders. |
 | **[Configuration reference](CONFIGURATION.md)** | Look up any `config.json` key, default, or file location. |
 | **[Troubleshooting](TROUBLESHOOTING.md)** | Fix the GUI, sound, wallpaper, accent, or weather. |
 

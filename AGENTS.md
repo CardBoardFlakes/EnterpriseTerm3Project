@@ -35,9 +35,8 @@ weather.get_live_weather (Open-Meteo, cached)      # real measurements
   → profiles.adjust_color + accessibility (high_contrast) + easing
   → theme.apply_theme_color   (accent + Dark/Light: osascript/defaults | registry)
   → wallpaper.apply_weather_wallpaper (generate PNG gradient+patterns, set desktop)
-     or webwall (Ultra: write weather.json for ScreenPlay/Lively/Plash)
   → sound.play_ambient (pygame) ; music player is separate
-  → tasks fire (notify/chime/set_weather/set_theme)
+  → tasks fire (notify/chime)
 ```
 
 `engine.Engine.step()` is the stateful, cheap per-tick path (used by the GUI
@@ -49,12 +48,10 @@ live-apply). Both must be kept consistent when you change behaviour.
 | File | Role |
 |---|---|
 | `engine.py` | Orchestration; `step` (stateful) + `tick` (one-shot); easing, guards, tasks |
-| `config.py` | `DEFAULTS`, load/save, choice lists, `feature_enabled`, motion mapping |
+| `config.py` | `DEFAULTS`, load/save, choice lists, `feature_enabled`, city list |
 | `weather.py` | Open-Meteo fetch, condition classification, overrides, offline fallback |
 | `theme.py` | Colour maths: weather base, time-of-day phases, `sky_light`, seasons, high-contrast, accent/appearance apply |
 | `wallpaper.py` | Stdlib PNG generation (gradient + patterns + sun/moon), set desktop |
-| `webwall.py` | "Ultra" web wallpaper (HTML/canvas + `weather.json`) |
-| `perf.py` | `AdaptiveGovernor` — throttles/pauses the Smooth animation |
 | `profiles.py` | Focus/Creativity/Relax mood overlays |
 | `sound.py` | Ambient selection + variants + pygame playback + placeholder synth |
 | `music.py` | Background music player (pygame `mixer.music`) |
@@ -78,30 +75,30 @@ live-apply). Both must be kept consistent when you change behaviour.
   `gui.py` (var + control + `_collect` + `apply_values_to_config` mapping) →
   add a test. `apply_values_to_config` reads new keys via `values.get(..., default)`
   so the existing GUI-mapping test keeps passing.
-- **Files/paths**: user data in `config.json` / `tasks.json` (cwd); generated
-  assets in `~/.environment_theme_controller/`; bundled `sounds/` and `music/`
-  are resolved **absolute** (next to the module) — keep it that way.
+- **Files/paths**: `config.json`, `tasks.json`, `sounds/`, and `music/` resolve
+  **absolute** next to the modules, independent of the launch directory;
+  generated wallpaper assets live in `~/.environment_theme_controller/`.
 - **Cross-platform** branches live in `theme.py`, `wallpaper.py`, `autostart.py`,
   `audiocheck.py` (guard on `sys.platform`).
 
 ## Testing conventions
 
 - `tests.py` is a single headless script using a `check(name, cond)` helper and
-  `section(title)`. It **stubs all system-mutating calls** (accent, wallpaper,
-  audio, launchctl/registry, network) so running it never touches the machine
-  or hits the internet. Follow that pattern for new tests.
+  `section(title)`. It stubs system-mutating calls (accent, wallpaper, audio,
+  notifications, launchctl/registry). Weather paths must tolerate an offline
+  environment and fall back safely; tests must not depend on live network data.
 - Prefer pure, deterministic logic you can test without a display. Inject `now`
   (datetime) rather than reading the clock so tests are stable.
 
 ## Gotchas (real, learned the hard way)
 
-- **The GUI cannot be run in a headless/sandbox environment** — Tk aborts with
-  `SystemAppearance not found` on macOS without a window server. Verify GUI
-  changes via `py_compile` + `import gui` + logic tests, not by launching it.
+- **The GUI needs an active display/window server.** Headless runs should use
+  `py_compile`, `import gui`, and logic tests. GUI changes also need a manual
+  visual pass in a real desktop session.
 - **`config.save_config` / `load_config` default `path` args bind at def time**
-  to `"config.json"`. Reassigning `config.CONFIG_FILE` at runtime does NOT
-  change them. Pass explicit paths in tests; don't rely on monkeypatching the
-  module constant.
+  to the absolute `CONFIG_FILE` value. Reassigning `config.CONFIG_FILE` at
+  runtime does NOT change them. Pass explicit paths in tests; don't rely on
+  monkeypatching the module constant.
 - **macOS wallpaper is per-Space**: a set made while a fullscreen app is focused
   doesn't reach the normal desktop. The engine periodically re-applies
   (`wallpaper_refresh_seconds`) to compensate — don't remove that.

@@ -2,8 +2,9 @@
 
 All settings live in **`config.json`** in the project folder. The GUI writes it
 for you, but you can edit it by hand. Main-window controls save automatically;
-the background engine reloads the file each cycle. Missing keys fall back to the defaults below, and an
-unreadable file is replaced with defaults rather than crashing.
+the background engine reloads the file each cycle. Missing keys fall back to
+the defaults below. An unreadable file uses defaults in memory and logs an
+error; the file is not overwritten until settings are next saved.
 
 - [File locations](#file-locations)
 - [Top level](#top-level)
@@ -13,6 +14,7 @@ unreadable file is replaced with defaults rather than crashing.
 - [Location](#location)
 - [Manual overrides](#manual-overrides)
 - [Engine cadence](#engine-cadence)
+- [Timers](#timers)
 - [Pomodoro](#pomodoro)
 - [Example](#example-configjson)
 
@@ -33,7 +35,7 @@ unreadable file is replaced with defaults rather than crashing.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `enabled` | bool | `true` | Master switch. When `false`, the engine does nothing. |
+| `enabled` | bool | `true` | Master switch. When `false`, new engine actions and reminders stop and ambient sound is silenced; the current accent and wallpaper remain in place. |
 
 ## Features
 
@@ -42,7 +44,7 @@ Under `"features"`; each is ANDed with the master switch.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `dynamic_theme` | bool | `true` | OS accent colour follows the weather. |
-| `wallpaper` | bool | `true` | Desktop background follows the weather. |
+| `wallpaper` | bool | `true` | Desktop background follows the weather. Turning this feature off restores the saved original wallpaper when available. |
 | `ambient_sound` | bool | `true` | Weather/time soundscape. |
 | `tasks` | bool | `true` | Run scheduled tasks. |
 
@@ -55,13 +57,16 @@ Under `"features"`; each is ANDed with the master switch.
 | `wallpaper_shift_strength` | int 0–100 | `35` | Amplitude of that drift. |
 | `wallpaper_patterns` | bool | `true` | Weather patterns (rain/sun/clouds/stars). |
 | `wallpaper_warmth` | bool | `true` | Warm the palette when it's cold outside. |
-| `wallpaper_min_interval_seconds` | int | `45` | Minimum gap between static wallpaper redraws. |
+| `wallpaper_min_interval_seconds` | int ≥5 | `45` | Minimum gap between generated wallpaper redraws. |
+| `wallpaper_refresh_seconds` | int ≥0 | `90` | Periodically reapply an unchanged wallpaper so macOS Spaces catch up; `0` disables this. |
 
 ## Sound
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `sound_volume` | int 0–100 | `25` | Ambient volume. |
+| `music_volume` | int 0–100 | `60` | Volume for the separate local music player. |
+| `pause_when_other_audio` | bool | `false` | Also stop ambience for detectable external audio. Flow's own music always takes priority regardless of this setting. |
 
 See the [sound guide](SOUNDS.md) for file names and variants.
 
@@ -110,8 +115,14 @@ Example (London):
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `tick_interval_seconds` | int ≥5 | `30` | How often the engine steps. |
-| `weather_refresh_seconds` | int ≥30 | `600` | How often live weather is refetched (expensive work only runs on change). |
+| `tick_interval_seconds` | int 5–3600 | `30` | How often the engine steps. |
+| `weather_refresh_seconds` | int 30–7200 | `600` | How often live weather is refetched (expensive work only runs on change). |
+
+## Timers
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `countdown_minutes` | int 1–600 | `10` | Last duration set in the plain countdown timer. |
 
 ## Pomodoro
 
@@ -142,14 +153,27 @@ Under `"pomodoro"`, minutes:
   "wallpaper_shift_strength": 35,
   "wallpaper_patterns": true,
   "wallpaper_warmth": true,
+  "wallpaper_min_interval_seconds": 45,
+  "wallpaper_refresh_seconds": 90,
   "sound_volume": 25,
+  "music_volume": 60,
+  "pause_when_other_audio": false,
   "location": { "lat": 51.5072, "lon": -0.1276, "name": "London" },
   "manual_weather": "auto",
   "manual_time": "auto",
   "manual_theme_color": null,
+  "smooth_transitions": true,
+  "theme_transition_seconds": 8,
+  "seasonal_themes": true,
+  "hemisphere": "auto",
+  "active_profile": "none",
+  "accessibility_mode": "none",
+  "appearance_mode": "auto",
+  "multi_monitor": true,
   "run_at_login": false,
   "tick_interval_seconds": 30,
   "weather_refresh_seconds": 600,
+  "countdown_minutes": 10,
   "pomodoro": { "work_min": 25, "break_min": 5, "long_break_min": 15, "cycles_before_long": 4 }
 }
 ```

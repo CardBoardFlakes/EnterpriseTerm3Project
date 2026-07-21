@@ -8,6 +8,7 @@ working and prints a `[subsystem] …` note to the console.
 - [There's no sound](#theres-no-sound)
 - [The wallpaper isn't changing](#the-wallpaper-isnt-changing)
 - [The accent colour didn't change (macOS)](#the-accent-colour-didnt-change-macos)
+- [The Dashboard is blank in high-contrast mode](#the-dashboard-is-blank-in-high-contrast-mode)
 - [Weather is wrong or says "fallback"](#weather-is-wrong-or-says-fallback)
 - [Run-at-login didn't stick](#run-at-login-didnt-stick)
 - [Reset everything](#reset-everything)
@@ -29,8 +30,6 @@ Symptom: `No module named '_tkinter'` or the window never appears.
 If there's genuinely no display, `python main.py` falls back to a single tick
 and exits — use `--background` for the headless loop instead.
 
-When run on macOS try checking the doc for the controller
-
 ---
 
 ## There's no sound
@@ -51,12 +50,16 @@ after temporary device errors and restarts a dropped loop within a few seconds.
 ## The wallpaper isn't changing
 
 - Ensure **Weather wallpaper** is ticked. Changes save and apply automatically.
-- Static redraws are rate-limited (`wallpaper_min_interval_seconds`, default
+- Generated wallpaper redraws are rate-limited (`wallpaper_min_interval_seconds`, default
   45s) and only happen when the colour/brightness actually changes — give it a
   moment, or change the manual weather to force a difference.
 - Linux desktops aren't supported for *setting* the wallpaper (the image is
   still generated).
 - Check the console for `[wallpaper] Failed to set …`.
+
+Unticking **Weather wallpaper** restores the wallpaper Flow saved before its
+first change, when that original file still exists. Turning off the master
+switch instead leaves the current wallpaper and accent in place.
 
 ### It only changes when I'm *not* in a fullscreen app (macOS)
 
@@ -80,12 +83,21 @@ system accent (Blue, Purple, Graphite, …), so it won't be an exact RGB match.
 
 ---
 
+## The Dashboard is blank in high-contrast mode
+
+Known issue: after enabling **high_contrast** and switching between Settings and
+Dashboard, Dashboard content can repaint as an empty black panel even though
+its controls are still present. Switch to Settings → Accessibility, return the
+mode to **none**, and relaunch Flow if the Dashboard does not repaint.
+
+---
+
 ## Weather is wrong or says "fallback"
 
 - `fallback` means the live fetch failed (no `requests`, no network, or the API
   was unreachable). Install `requests` and check your connection.
-- Wrong city? Set your coordinates in `config.json` →
-  [`location`](CONFIGURATION.md#location).
+- Wrong city? Pick **Settings → Engine → City**. For an unlisted city, set its
+  coordinates in `config.json` → [`location`](CONFIGURATION.md#location).
 - Want to test a specific condition regardless of the sky? Use the **Manual
   theme changer** on the Dashboard (`Weather` = rain/storm/…).
 
@@ -105,12 +117,26 @@ system accent (Blue, Purple, Graphite, …), so it won't be an exact RGB match.
 
 ## Reset everything
 
-Stop the app, then delete the state files — they're recreated with defaults on
-next launch:
+Stop the app, then delete the state files. Defaults are used on next launch;
+`config.json` is written again when a setting changes and `tasks.json` when a
+reminder changes.
+
+Before deleting the generated-wallpaper folder, untick **Weather wallpaper** so
+Flow can restore the original desktop first. That folder also contains the
+saved path used for restoration.
+
+macOS/Linux shell:
 
 ```bash
 rm config.json tasks.json
 rm -rf ~/.environment_theme_controller     # generated wallpaper assets
+```
+
+Windows PowerShell (run from the project folder):
+
+```powershell
+Remove-Item config.json, tasks.json -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.environment_theme_controller" -Recurse -Force -ErrorAction SilentlyContinue
 ```
 
 (Deleting `sounds/` also removes any custom audio; placeholders regenerate.)

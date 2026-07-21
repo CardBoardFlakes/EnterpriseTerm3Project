@@ -32,8 +32,9 @@ python main.py
 `tkinter` (the GUI toolkit) ships with Python but is not a pip package. If the
 window doesn't open, see [Troubleshooting](TROUBLESHOOTING.md#the-gui-wont-open).
 
-On first launch the app writes a `config.json` with defaults and, when sound
-plays, synthesises placeholder audio into `sounds/`.
+On first launch the app uses built-in defaults. It writes `config.json` when a
+setting first changes and, when sound first plays, synthesises any missing base
+audio loops into `sounds/`.
 
 ---
 
@@ -55,13 +56,19 @@ fetch again.
 The heading names both values explicitly, for example **Weather: Rain · Time:
 Afternoon**. Night and dusk are time-of-day phases, not weather conditions.
 
-> The live readings always reflect the *real* outside weather. Using a manual
-> weather/time override only changes the look (theme, wallpaper, sound) — the
-> card still shows the true temperature, humidity, UV, etc., marked `(manual)`
-> so you know a look is forced.
+> Temperature, humidity, UV, wind, rain chance, and pressure remain the live
+> outside readings. A manual weather override changes the condition shown and
+> the resulting theme, wallpaper, and sound; `(manual)` marks that condition.
+> A manual time override changes the visual time phase while measurements stay
+> live.
 
-The whole window also follows the time of day — light by day, dark at night,
-with an accent tinted to the current sky — so the app matches your desktop.
+The whole window also follows the time of day — light by day and dark at night.
+Its palette takes the active theme accent when that display mode changes.
+
+**Mood profile** — choose Off, Focus, Creativity, or Relax. Profiles adjust the
+computed colour and ambient level without overwriting your volume setting:
+Focus is cooler and quieter, Creativity more vivid, and Relax warmer and
+gentler.
 
 **Features** — the master switch plus per-feature toggles:
 
@@ -95,14 +102,22 @@ while the master switch is on and are managed in **Focus & Tasks**.
 
 ### Settings tab
 
-Looks and performance — set once and forget.
+Longer-lived appearance and engine controls. The tab scrolls only when its
+cards do not fit; the scrollbar hides when everything is visible.
 
 - **Wallpaper look** — tint strength, subtle colour drift, weather patterns
   (rain/sun/clouds/stars), and the cold-weather warm tint. See the
   [Wallpaper guide](WALLPAPER.md).
-- **Sound** — ambient volume, optional pause while other audio plays, and a
-  **Sound files…** button that lists the required filenames and opens the
-  folder. Ambience loops continuously. See the [Sound guide](SOUNDS.md).
+- **Sound** — ambient volume, optional pause for detectable external audio, and
+  a **Sound files…** button that lists required filenames and opens the folder.
+  Flow's own music always pauses ambience; otherwise ambience loops
+  continuously. See the [Sound guide](SOUNDS.md).
+- **Seasons & transitions** — gradual colour transitions, seasonal palette,
+  and automatic or fixed hemisphere.
+- **Device appearance** — follow time of day or lock the device and Flow window
+  to Dark or Light.
+- **Accessibility** — normal or high-contrast colours. A known Dashboard repaint
+  issue is documented in [Troubleshooting](TROUBLESHOOTING.md#the-dashboard-is-blank-in-high-contrast-mode).
 - **Engine** — how often the app steps (`Tick`) and refetches weather, the city
   used for live weather, multi-monitor wallpaper, and **Run automatically at
   login**.
@@ -152,12 +167,13 @@ cycle, so changes apply without a restart).
 ## Running without the GUI
 
 ```bash
-python main.py --once        # apply the theme/wallpaper/sound once, then exit
+python main.py --once        # run one engine cycle, then exit
 python main.py --background  # run the engine loop forever (Ctrl-C to stop)
 ```
 
-`--once` is useful for scripting or a quick test; `--background` is what the
-run-at-login launcher uses.
+`--once` is useful for scripting or a quick theme/wallpaper test. It may start
+ambience during that cycle, but audio ends when the process exits.
+`--background` is what the run-at-login launcher uses.
 
 ---
 

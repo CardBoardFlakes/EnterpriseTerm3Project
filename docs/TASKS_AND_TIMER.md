@@ -1,14 +1,13 @@
-# Tasks & Timer Guide
+# Tasks & Timers Guide
 
 Timers, reminders, and music live in the **Focus & Tasks** window (click
-**⏱ Focus & Tasks** in the header). It runs independently — a timer keeps
-counting even if you close the window or switch tabs.
+**⏱ Focus & Tasks** in the header). Timers belong to the main app process: they
+keep counting if you close this secondary window or switch tabs, but stop when
+you quit Flow.
 
-- [Pomodoro timer](#pomodoro-timer)
+- [Timers](#timers)
 - [Tasks & schedules](#tasks--schedules)
-  - [Task types](#task-types)
-  - [Actions](#actions)
-  - [Adding a task](#adding-a-task)
+  - [Adding a reminder](#adding-a-reminder)
   - [When tasks fire](#when-tasks-fire)
 
 ---
@@ -24,6 +23,7 @@ A running clock keeps going even while you view another mode.
 
 Set **Minutes**, press **Set**, then **Start**. It counts down and, at zero,
 plays the chime and shows a notification. Starting a finished timer restarts it.
+The most recently set duration is saved in `config.json`.
 
 ### ⏱ Stopwatch
 
@@ -95,6 +95,11 @@ Tasks are evaluated on each engine step while the app or `--background` mode is
 running and the master switch is on. A daily task fires the first engine step at
 or after its time, once per day. A one-off fires the first step at or after its
 datetime, then is marked done. If the app isn't running at the exact minute,
-the task still fires the next time it runs that day.
+the daily task still fires the next time it runs that day; an overdue one-off
+fires the next time the engine runs.
+
+Due reminders are claimed and saved before their action runs. This prevents the
+GUI and a simultaneous `--background` process from firing the same reminder
+twice.
 
 *Notify me* and *Play a chime* do not change theme or wallpaper settings.
