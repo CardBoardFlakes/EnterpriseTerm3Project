@@ -1656,6 +1656,23 @@ def test_gui_helper():
     check("dashboard compact format marks manual weather",
           gui._weather_summary("rain", "afternoon", manual=True) ==
           "Rain  ·  afternoon  ·  manual")
+    live = {
+        "condition": "clear",
+        "sunrise": datetime.datetime(2026, 7, 21, 6),
+        "sunset": datetime.datetime(2026, 7, 21, 20),
+        "is_day": True,
+        "source": "test",
+    }
+    manual_cfg = config.default_config()
+    manual_cfg["manual_weather"] = "rain"
+    manual_cfg["manual_time"] = "night"
+    card = gui._weather_card_data(
+        live, manual_cfg, datetime.datetime(2026, 7, 21, 23))
+    check("manual changer reapplies cached live weather",
+          card["condition"] == "rain"
+          and card["condition_source"] == "manual"
+          and card["phase"] == "night"
+          and card["is_night"] is True)
     check("long timer labels select a smaller fitting font",
           gui._largest_fitting_font(
               "abcdefghij", 300,

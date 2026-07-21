@@ -80,7 +80,8 @@ shared wake marker, so auto-apply remains immediate.
   signals so first-window open starts sound and last-window close stops it.
 - **Weather-card refresh is automatic.** The GUI fetches at launch, after city
   changes, and on `weather_refresh_seconds`, including while its engine thread
-  is passive behind the run-at-login process. Do not add a manual refresh UI.
+  is passive behind the run-at-login process. Manual weather/time changes must
+  reapply cached live measurements immediately; do not add a manual refresh UI.
 - **Register every app entry-point process with `audiocheck`.** CoreAudio and
   Windows audio sessions can keep reporting Flow's mixer after music stops;
   external-audio detection must exclude all registered Flow PIDs, while the

@@ -236,6 +236,21 @@ def _weather_summary(condition, phase, manual=False):
     return f"{weather_text}  ·  {phase_text}{suffix}"
 
 
+def _weather_card_data(live, cfg, now=None):
+    """Apply current manual controls to cached live measurements."""
+    effective = weather.apply_overrides(live, cfg, now)
+    manual_time = (cfg.get("manual_time") or "auto").lower()
+    phase = (theme.normalize_phase(manual_time) if manual_time != "auto"
+             else theme.compute_day_phase(
+                 effective["sunrise"], effective["sunset"], now))
+    rgb, brightness = theme.compute_theme_color(
+        effective["condition"], effective["sunrise"], effective["sunset"],
+        phase=phase, now=now)
+    data = dict(effective)
+    data.update({"phase": phase, "color": list(rgb), "brightness": brightness})
+    return data
+
+
 def _shift_iso_date(value, days, today=None):
     """Shift an ISO date, falling back to today when the field is invalid."""
     today = today or datetime.date.today()
@@ -323,6 +338,8 @@ class App:
         self._weather_refresh_job = None
         self._weather_refresh_seconds = None
         self._weather_refresh_generation = 0
+        self._weather_live = None
+        self._refresh_card_after_apply = False
         self._scroll_canvases = []   # tk.Canvas backing the scrollable tabs
         self._scroll_items = {}      # canvas -> embedded content item
         self._effective_swatch = None
@@ -766,8 +783,8 @@ class App:
         self.v_color.trace_add("write", lambda *_: self._update_swatch())
         # Apply weather/time the instant the selection changes. A variable
         # trace is more reliable across platforms than a widget event.
-        self.v_weather.trace_add("write", lambda *_: self._on_override_change())
-        self.v_time.trace_add("write", lambda *_: self._on_override_change())
+        self.v_weather.trace_add("write", lambda *_: self._on_manual_theme_change())
+        self.v_time.trace_add("write", lambda *_: self._on_manual_theme_change())
         return page
 
     # --- Settings tab --------------------------------------------------
@@ -914,21 +931,27 @@ class App:
         def work():
             try:
                 cfg = config.load_config()
-                w = weather.get_effective_weather(cfg)
-                mt = (cfg.get("manual_time") or "auto").lower()
-                ph = (theme.normalize_phase(mt) if mt != "auto"
-                      else theme.compute_day_phase(w["sunrise"], w["sunset"]))
-                rgb, bright = theme.compute_theme_color(
-                    w["condition"], w["sunrise"], w["sunset"], phase=ph)
-                data = dict(w)
-                data.update({"phase": ph, "color": list(rgb), "brightness": bright})
+                live = weather.get_live_weather(cfg)
+                data = _weather_card_data(live, cfg)
             except Exception as e:
+                live = None
                 data = {"error": str(e)}
             self.status_queue.put({
                 "_weather_card": data,
+                "_weather_live": live,
                 "_weather_refresh_generation": generation,
             })
         threading.Thread(target=work, daemon=True).start()
+
+    def _refresh_weather_overrides(self):
+        if self._weather_live is None:
+            self.refresh_weather()
+            return
+        try:
+            self._update_weather_card(
+                _weather_card_data(self._weather_live, self.cfg))
+        except Exception:
+            self.refresh_weather()
 
     def _update_weather_card(self, d):
         if "error" in d:
@@ -982,6 +1005,9 @@ class App:
         """A manual override changed — apply it right away."""
         self._schedule_auto_apply("Settings updated")
 
+    def _on_manual_theme_change(self):
+        self._schedule_auto_apply("Settings updated", refresh_card=True)
+
     def _bind_auto_apply(self):
         """Persist and apply every main-window setting without action buttons."""
         variables = (
@@ -993,7 +1019,8 @@ class App:
         for variable in variables:
             variable.trace_add("write", lambda *_: self._schedule_auto_apply())
 
-    def _schedule_auto_apply(self, note="Settings updated"):
+    def _schedule_auto_apply(self, note="Settings updated", refresh_card=False):
+        self._refresh_card_after_apply |= refresh_card
         job = self._auto_apply_job
         if job:
             try:
@@ -1005,7 +1032,11 @@ class App:
 
     def _flush_auto_apply(self, note):
         self._auto_apply_job = None
+        refresh_card = self._refresh_card_after_apply
+        self._refresh_card_after_apply = False
         self._apply_live(note)
+        if refresh_card:
+            self._refresh_weather_overrides()
 
     def _start_engine(self):
         self.engine_thread = engine.EngineThread(
@@ -1684,6 +1715,8 @@ class App:
                     if (generation is not None
                             and generation != self._weather_refresh_generation):
                         continue
+                    if st.get("_weather_live") is not None:
+                        self._weather_live = st["_weather_live"]
                     self._update_weather_card(st["_weather_card"])
                     if generation is not None:
                         self._schedule_weather_refresh()

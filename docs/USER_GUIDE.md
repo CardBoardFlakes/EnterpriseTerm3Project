@@ -90,6 +90,10 @@ switch is on the Dashboard.
 
 **Manual theme changer** — override what the app shows:
 
+Weather and time selections update the Dashboard heading immediately while
+reusing the latest live measurements; they do not wait for the next weather
+fetch or for the run-at-login engine to return status.
+
 - *Weather* — `auto` (use live data) or force `clear`, `cloud`, `rain`, or
   `storm`.
 - *Time of day* — `auto`, or a specific phase: `sunrise`, `morning`, `midday`,
