@@ -1673,6 +1673,30 @@ def test_gui_helper():
           and card["condition_source"] == "manual"
           and card["phase"] == "night"
           and card["is_night"] is True)
+    contrast_cfg = config.default_config()
+    contrast_cfg["accessibility_mode"] = "high_contrast"
+    contrast_now = datetime.datetime(2026, 7, 21, 12)
+    contrast_card = gui._weather_card_data(live, contrast_cfg, contrast_now)
+    contrast_effective = weather.apply_overrides(live, contrast_cfg, contrast_now)
+    resolved = engine.resolve_theme(contrast_effective, contrast_cfg, contrast_now)
+    check("dashboard preview shares engine high-contrast colour",
+          contrast_card["color"] == list(resolved["color"]))
+    accent_cfg = config.default_config()
+    accent_cfg["manual_theme_color"] = [12, 34, 56]
+    accent_card = gui._weather_card_data(live, accent_cfg, contrast_now)
+    check("dashboard preview uses manual accent", accent_card["color"] == [12, 34, 56])
+
+    refresh_requests = []
+    override_app = object.__new__(gui.App)
+    override_app._schedule_auto_apply = (
+        lambda note, refresh_card=False: refresh_requests.append(
+            (note, refresh_card)))
+    gui.App._on_override_change(override_app)
+    check("appearance overrides request a local window repaint",
+          refresh_requests == [("Settings updated", True)])
+    dashboard_source = inspect.getsource(gui.App._tab_dashboard)
+    check("typed accent changes auto-apply",
+          "_on_manual_color_change" in dashboard_source)
     check("long timer labels select a smaller fitting font",
           gui._largest_fitting_font(
               "abcdefghij", 300,
@@ -1719,7 +1743,6 @@ def test_gui_helper():
     check("main tab is named Settings", 'text="  Settings  "' in shell_source)
     check("city helper text removed", "Pick your city for live weather" not in settings_source)
     check("random playback controls removed", "Playback" not in settings_source)
-    dashboard_source = inspect.getsource(gui.App._tab_dashboard)
     check("weather refresh button removed",
           "Refresh weather" not in dashboard_source)
     check("accent control explains its OS effect",

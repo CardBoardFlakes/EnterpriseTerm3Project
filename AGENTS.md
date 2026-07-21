@@ -82,6 +82,10 @@ shared wake marker, so auto-apply remains immediate.
   changes, and on `weather_refresh_seconds`, including while its engine thread
   is passive behind the run-at-login process. Manual weather/time changes must
   reapply cached live measurements immediately; do not add a manual refresh UI.
+- **A passive GUI must repaint itself.** The run-at-login process may own the
+  engine and cannot send status callbacks into the GUI process. Display-affecting
+  controls must resolve from cached weather and repaint locally after saving;
+  waking the background owner alone updates the OS but leaves the window stale.
 - **Register every app entry-point process with `audiocheck`.** CoreAudio and
   Windows audio sessions can keep reporting Flow's mixer after music stops;
   external-audio detection must exclude all registered Flow PIDs, while the

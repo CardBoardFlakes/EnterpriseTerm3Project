@@ -106,33 +106,20 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
     status.update({k: eff.get(k) for k in weather.MEASUREMENT_KEYS})
 
     # --- Resolve theme colour -----------------------------------------
-    manual_time = (cfg.get("manual_time") or "auto").lower()
-    phase = theme.normalize_phase(manual_time) if manual_time != "auto" else None
-    night_override = None if manual_time == "auto" else is_night
-    season = _season_now(cfg, now)
-    hc = (cfg.get("accessibility_mode") or "none").lower() == "high_contrast"
-    status["season"] = season
-
-    manual_color = cfg.get("manual_theme_color")
-    if manual_color and len(manual_color) == 3:
-        r, g, b = manual_color
-        brightness = theme.phase_light(phase)[0] if phase else (
-            theme.NIGHT_BRIGHTNESS if is_night else 1.0)
-        if hc:
-            r, g, b = theme.high_contrast((r, g, b))
-        status["color_source"] = "manual"
-    else:
-        (r, g, b), brightness = theme.compute_theme_color(
-            condition, eff["sunrise"], eff["sunset"],
-            is_night_override=night_override, phase=phase, now=now, season=season
-        )
-        r, g, b = _style_color((r, g, b), cfg)
-        status["color_source"] = "computed"
+    resolved = resolve_theme(eff, cfg, now)
+    r, g, b = resolved["color"]
+    brightness = resolved["brightness"]
+    hc = resolved["high_contrast"]
+    status["season"] = resolved["season"]
+    status["color_source"] = resolved["color_source"]
     status["color"] = [r, g, b]
-    status["phase"] = phase or theme.compute_day_phase(eff["sunrise"], eff["sunset"], now)
+    status["phase"] = resolved["phase"]
     status["brightness"] = round(brightness, 3)
     # Sky-body position: sun by day, moon by night (both arc east -> west).
-    sun = theme.celestial_fraction(phase, eff["sunrise"], eff["sunset"], now)
+    sun = theme.celestial_fraction(
+        resolved["phase"] if (cfg.get("manual_time") or "auto").lower() != "auto" else None,
+        eff["sunrise"], eff["sunset"], now,
+    )
 
     tint = 1.0 if hc else cfg.get("weather_tint_strength", 40) / 100.0
 
@@ -217,6 +204,47 @@ def _style_color(rgb, cfg):
     if (cfg.get("accessibility_mode") or "none").lower() == "high_contrast":
         rgb = theme.high_contrast(rgb)
     return tuple(int(c) for c in rgb)
+
+
+def resolve_theme(eff, cfg, now):
+    """Resolve target colour and phase shared by engine and GUI preview."""
+    manual_time = (cfg.get("manual_time") or "auto").lower()
+    forced_phase = theme.normalize_phase(manual_time) if manual_time != "auto" else None
+    night_override = None if manual_time == "auto" else eff["is_night"]
+    season = _season_now(cfg, now)
+    high_contrast = (
+        (cfg.get("accessibility_mode") or "none").lower() == "high_contrast"
+    )
+
+    manual_color = cfg.get("manual_theme_color")
+    if manual_color and len(manual_color) == 3:
+        rgb = tuple(manual_color)
+        brightness = theme.phase_light(forced_phase)[0] if forced_phase else (
+            theme.NIGHT_BRIGHTNESS if eff["is_night"] else 1.0
+        )
+        if high_contrast:
+            rgb = theme.high_contrast(rgb)
+        color_source = "manual"
+    else:
+        rgb, brightness = theme.compute_theme_color(
+            eff["condition"], eff["sunrise"], eff["sunset"],
+            is_night_override=night_override, phase=forced_phase,
+            now=now, season=season,
+        )
+        rgb = _style_color(rgb, cfg)
+        color_source = "computed"
+
+    phase = forced_phase or theme.compute_day_phase(
+        eff["sunrise"], eff["sunset"], now
+    )
+    return {
+        "color": tuple(int(c) for c in rgb),
+        "brightness": brightness,
+        "phase": phase,
+        "season": season,
+        "color_source": color_source,
+        "high_contrast": high_contrast,
+    }
 
 
 def other_audio_playing(cfg):
@@ -383,27 +411,13 @@ class Engine:
                        "condition_source": eff.get("condition_source")})
         status.update({k: eff.get(k) for k in weather.MEASUREMENT_KEYS})
 
-        manual_time = (cfg.get("manual_time") or "auto").lower()
-        phase = theme.normalize_phase(manual_time) if manual_time != "auto" else None
-        night_override = None if manual_time == "auto" else is_night
-        season = _season_now(cfg, now)
-        hc = (cfg.get("accessibility_mode") or "none").lower() == "high_contrast"
-        status["season"] = season
-        manual_color = cfg.get("manual_theme_color")
-        is_manual = bool(manual_color and len(manual_color) == 3)
-        if is_manual:
-            tr, tg, tb = manual_color
-            brightness = theme.phase_light(phase)[0] if phase else (
-                theme.NIGHT_BRIGHTNESS if is_night else 1.0)
-            if hc:                                  # accessibility still applies
-                tr, tg, tb = theme.high_contrast((tr, tg, tb))
-            status["color_source"] = "manual"
-        else:
-            (tr, tg, tb), brightness = theme.compute_theme_color(
-                condition, eff["sunrise"], eff["sunset"],
-                is_night_override=night_override, phase=phase, now=now, season=season)
-            tr, tg, tb = _style_color((tr, tg, tb), cfg)   # profile mood + a11y
-            status["color_source"] = "computed"
+        resolved = resolve_theme(eff, cfg, now)
+        tr, tg, tb = resolved["color"]
+        brightness = resolved["brightness"]
+        hc = resolved["high_contrast"]
+        status["season"] = resolved["season"]
+        status["color_source"] = resolved["color_source"]
+        is_manual = resolved["color_source"] == "manual"
 
         # Gradual transitions: ease the *displayed* colour toward the target so
         # weather/time changes cross-fade instead of snapping. A manually picked
@@ -422,10 +436,14 @@ class Engine:
 
         status["color"] = [r, g, b]
         status["target_color"] = [tr, tg, tb]
-        status["phase"] = phase or theme.compute_day_phase(eff["sunrise"], eff["sunset"], now)
+        status["phase"] = resolved["phase"]
         status["brightness"] = round(brightness, 3)
         # Sky-body position: sun by day, moon by night (both arc east -> west).
-        sun = theme.celestial_fraction(phase, eff["sunrise"], eff["sunset"], now)
+        sun = theme.celestial_fraction(
+            resolved["phase"]
+            if (cfg.get("manual_time") or "auto").lower() != "auto" else None,
+            eff["sunrise"], eff["sunset"], now,
+        )
         tint = 1.0 if hc else cfg.get("weather_tint_strength", 40) / 100.0
 
         # --- theme: apply only when the visible signature changes ------

@@ -140,6 +140,11 @@ The engine starts when the window opens. Every main-window setting is saved and
 applied automatically as you change it; no Start, Step, Apply, or Save action is
 needed.
 
+When **Run automatically at login** is active, that background process may own
+the engine. Flow still updates its open window immediately for manual theme,
+profile, Dark/Light, seasonal, and high-contrast changes while the background
+process applies the same setting to the desktop.
+
 > **macOS note:** the accent colour only appears in apps launched *after* it's
 > set. Dark/Light mode and the wallpaper update immediately.
 
