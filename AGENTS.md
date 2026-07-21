@@ -75,6 +75,9 @@ shared wake marker, so auto-apply remains immediate.
   per-tick OS writes.
 - **Only one engine loop runs at a time.** GUI and run-at-login processes may
   overlap; preserve the engine lease, shared wake marker, and audio locks.
+- **Weather-card refresh is automatic.** The GUI fetches at launch, after city
+  changes, and on `weather_refresh_seconds`, including while its engine thread
+  is passive behind the run-at-login process. Do not add a manual refresh UI.
 - **Register every app entry-point process with `audiocheck`.** CoreAudio and
   Windows audio sessions can keep reporting Flow's mixer after music stops;
   external-audio detection must exclude all registered Flow PIDs, while the

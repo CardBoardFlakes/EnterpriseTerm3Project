@@ -320,6 +320,9 @@ class App:
         self._ui_key = None          # (dark, accent) currently applied
         self._apply_busy = False     # a preview tick is in flight
         self._auto_apply_job = None  # coalesce rapid slider/spinbox changes
+        self._weather_refresh_job = None
+        self._weather_refresh_seconds = None
+        self._weather_refresh_generation = 0
         self._scroll_canvases = []   # tk.Canvas backing the scrollable tabs
         self._scroll_items = {}      # canvas -> embedded content item
         self._effective_swatch = None
@@ -331,7 +334,7 @@ class App:
         self._start_engine()
         self._poll_status_queue()
         self._timer_loop()
-        self.refresh_weather()      # populate the weather card at launch
+        self.refresh_weather()      # populate, then keep the weather card current
 
     # --- tk variables --------------------------------------------------
     def _build_vars(self):
@@ -707,8 +710,6 @@ class App:
         _responsive_label(
             wc, textvariable=self.v_wdetails, style="Muted.TLabel"
         ).pack(anchor="w", pady=(8, 0))
-        ttk.Button(wc, text="↻ Refresh weather", style="Ghost.TButton",
-                   command=self.refresh_weather).pack(anchor="e", pady=(4, 0))
 
         # Mood profile ----------------------------------------------------
         pc = _card(body, "Mood profile")
@@ -880,14 +881,41 @@ class App:
                   variable=var).pack(fill="x", side="left", expand=True, padx=8)
 
     # --- weather card --------------------------------------------------
+    def _schedule_weather_refresh(self):
+        seconds = max(30, int(self.cfg.get("weather_refresh_seconds", 600)))
+        if (self._weather_refresh_job is not None
+                and self._weather_refresh_seconds == seconds):
+            return
+        if self._weather_refresh_job is not None:
+            try:
+                self.root.after_cancel(self._weather_refresh_job)
+            except Exception:
+                pass
+        self._weather_refresh_seconds = seconds
+        self._weather_refresh_job = self.root.after(
+            seconds * 1000, self._automatic_weather_refresh)
+
+    def _automatic_weather_refresh(self):
+        self._weather_refresh_job = None
+        self.refresh_weather()
+
     def refresh_weather(self):
-        """Fetch the effective weather in the background and update the card."""
+        """Fetch weather now; completion schedules the next automatic fetch."""
+        if self._weather_refresh_job is not None:
+            try:
+                self.root.after_cancel(self._weather_refresh_job)
+            except Exception:
+                pass
+            self._weather_refresh_job = None
+        self._weather_refresh_generation += 1
+        generation = self._weather_refresh_generation
         self.v_wcond.set("Fetching weather…")
 
         def work():
             try:
-                w = weather.get_effective_weather(self.cfg)
-                mt = (self.cfg.get("manual_time") or "auto").lower()
+                cfg = config.load_config()
+                w = weather.get_effective_weather(cfg)
+                mt = (cfg.get("manual_time") or "auto").lower()
                 ph = (theme.normalize_phase(mt) if mt != "auto"
                       else theme.compute_day_phase(w["sunrise"], w["sunset"]))
                 rgb, bright = theme.compute_theme_color(
@@ -896,7 +924,10 @@ class App:
                 data.update({"phase": ph, "color": list(rgb), "brightness": bright})
             except Exception as e:
                 data = {"error": str(e)}
-            self.status_queue.put({"_weather_card": data})
+            self.status_queue.put({
+                "_weather_card": data,
+                "_weather_refresh_generation": generation,
+            })
         threading.Thread(target=work, daemon=True).start()
 
     def _update_weather_card(self, d):
@@ -1028,6 +1059,7 @@ class App:
         try:
             self._collect()
             config.save_config(self.cfg)
+            self._schedule_weather_refresh()
             if self.engine_thread and self.engine_thread.is_alive():
                 # The engine applies on its own (single) thread — just nudge it.
                 # Running a second tick here would fight it (concurrent pygame /
@@ -1648,7 +1680,13 @@ class App:
             while True:
                 st = self.status_queue.get_nowait()
                 if "_weather_card" in st:
+                    generation = st.get("_weather_refresh_generation")
+                    if (generation is not None
+                            and generation != self._weather_refresh_generation):
+                        continue
                     self._update_weather_card(st["_weather_card"])
+                    if generation is not None:
+                        self._schedule_weather_refresh()
                     continue
                 self.v_status.set(self._format_status(st))
                 if "condition" in st:            # engine status also feeds the card

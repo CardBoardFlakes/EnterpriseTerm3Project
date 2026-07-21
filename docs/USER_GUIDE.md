@@ -51,8 +51,9 @@ Everything you touch day-to-day is here.
 **Live weather card** — an icon, the current condition, the time-of-day phase,
 the **temperature**, and a live-data line: **feels-like, humidity, UV index
 (with risk band), wind + gusts, rain chance and pressure**. It also shows your
-location and data source (`live` / `fallback`). Press **↻ Refresh weather** to
-fetch again.
+location and data source (`live` / `fallback`). The card fetches at launch,
+after a city change, and automatically at the **Weather refresh** interval in
+Settings → Engine.
 
 The heading uses a compact condition-and-phase format, for example **Rain ·
 afternoon**. Night and dusk are time-of-day phases, not weather conditions.

@@ -117,7 +117,7 @@ Example (London):
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `tick_interval_seconds` | int 5–3600 | `30` | How often the engine steps. |
-| `weather_refresh_seconds` | int 30–7200 | `600` | How often live weather is refetched (expensive work only runs on change). |
+| `weather_refresh_seconds` | int 30–7200 | `600` | How often the engine and Dashboard card automatically refetch live weather. |
 
 ## Timers
 

@@ -1675,12 +1675,43 @@ def test_gui_helper():
     check("city helper text removed", "Pick your city for live weather" not in settings_source)
     check("random playback controls removed", "Playback" not in settings_source)
     dashboard_source = inspect.getsource(gui.App._tab_dashboard)
+    check("weather refresh button removed",
+          "Refresh weather" not in dashboard_source)
     check("accent control explains its OS effect",
           "nearest named macOS accent" in dashboard_source)
     check("task reminders have an independent switch",
           "Task reminders" in dashboard_source)
     check("celestial wallpaper setting is explicit",
           "Sun, moon, stars & weather patterns" in settings_source)
+
+    class FakeRoot:
+        def __init__(self):
+            self.scheduled = []
+            self.cancelled = []
+
+        def after(self, delay, callback):
+            self.scheduled.append((delay, callback))
+            return len(self.scheduled)
+
+        def after_cancel(self, job):
+            self.cancelled.append(job)
+
+    weather_app = object.__new__(gui.App)
+    weather_app.root = FakeRoot()
+    weather_app.cfg = {"weather_refresh_seconds": 45}
+    weather_app._weather_refresh_job = None
+    weather_app._weather_refresh_seconds = None
+    gui.App._schedule_weather_refresh(weather_app)
+    check("weather card schedules automatic refresh",
+          weather_app.root.scheduled[0][0] == 45000)
+    gui.App._schedule_weather_refresh(weather_app)
+    check("same weather interval is not scheduled twice",
+          len(weather_app.root.scheduled) == 1)
+    weather_app.cfg["weather_refresh_seconds"] = 90
+    gui.App._schedule_weather_refresh(weather_app)
+    check("weather interval change reschedules automatically",
+          weather_app.root.cancelled == [1]
+          and weather_app.root.scheduled[-1][0] == 90000)
 
 
 def test_cities():

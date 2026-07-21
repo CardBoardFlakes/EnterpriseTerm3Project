@@ -50,7 +50,7 @@ See the full walkthrough in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 | **Audio priority** | Flow music always pauses ambience and ambience resumes when music stops. An optional setting also pauses ambience for other app audio (CoreAudio on macOS, or `pycaw` on Windows); Flow's own processes are excluded. |
 | **Timers** | A Timers tab with three modes: **Pomodoro** (work/break cycles), a plain **countdown Timer**, and a **Stopwatch** with laps. |
 | **Tasks & schedules** | Daily or one-off reminders that show a notification or play a chime. |
-| **Live weather panel** | Temperature, feels-like, humidity, UV index (with risk band), wind + gusts, rain chance and pressure. |
+| **Live weather panel** | Temperature, feels-like, humidity, UV index (with risk band), wind + gusts, rain chance and pressure, refreshed automatically. |
 | **Manual overrides** | Force a weather condition, time of day, or exact accent colour. Measurements stay live; a forced weather label is marked `manual`. Night is a time-of-day choice, not a weather condition. |
 | **Time-of-day UI** | The app window follows the day with a light theme by day and dark theme at night; its palette uses the active theme accent when the mode changes. |
 | **Location privacy** | No automatic location detection; only the coordinates for your selected city are sent for weather data. |
@@ -157,7 +157,7 @@ pip install ruff
 python3 -m ruff check .      # 0 issues
 ```
 
-A 433-check headless test suite covering config,
+A 437-check headless test suite covering config,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
 / warmth / reliable original restoration, sound selection / variants /
