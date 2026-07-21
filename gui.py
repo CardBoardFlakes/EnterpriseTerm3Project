@@ -267,11 +267,14 @@ class App:
         self.status_lbl = None
         self._ui_key = None          # (dark, accent) currently applied
         self._apply_busy = False     # a preview tick is in flight
+        self._auto_apply_job = None  # coalesce rapid slider/spinbox changes
         self._scroll_canvases = []   # tk.Canvas backing the scrollable tabs
         self._install_styles()
 
         self._build_vars()
         self._build_ui()
+        self._bind_auto_apply()
+        self._start_engine()
         self._poll_status_queue()
         self._timer_loop()
         self.refresh_weather()      # populate the weather card at launch
@@ -292,6 +295,7 @@ class App:
         self.v_soundmode = tk.StringVar(value=c.get("sound_mode", "loop"))
         self.v_soundinterval = tk.IntVar(value=int(c.get("sound_interval_minutes", 5)))
         self.v_musicvol = tk.IntVar(value=int(c.get("music_volume", 60)))
+        self.v_musicvol.trace_add("write", self._on_music_volume)
         self.v_duck = tk.BooleanVar(value=c.get("pause_when_other_audio", False))
         self.music_now = tk.StringVar(value="Nothing playing")
         self.v_tick = tk.IntVar(value=int(c.get("tick_interval_seconds", 30)))
@@ -313,7 +317,7 @@ class App:
         mc = c.get("manual_theme_color")
         self.v_color = tk.StringVar(value=("auto" if not mc else ",".join(map(str, mc))))
         self.v_runlogin = tk.BooleanVar(value=autostart.is_autostart_enabled())
-        self.v_status = tk.StringVar(value="Idle — press Start.")
+        self.v_status = tk.StringVar(value="Starting…")
 
         # Live weather card text.
         self.v_wicon = tk.StringVar(value="🌡️")
@@ -549,11 +553,6 @@ class App:
         header = ttk.Frame(self.root, padding=(14, 12, 14, 6))
         header.pack(fill="x")
         ttk.Label(header, text="Flow", style="H1.TLabel").pack(side="left")
-        # One button runs the show: Start applies immediately and keeps the
-        # engine live; Stop halts it. (No separate "Apply Now" to confuse.)
-        self.btn_engine = ttk.Button(header, text="▶  Start", style="Accent.TButton",
-                                     command=self.on_toggle_engine)
-        self.btn_engine.pack(side="right")
         ttk.Button(header, text="⏱  Focus & Tasks", style="Ghost.TButton",
                    command=self.open_tools).pack(side="right", padx=6)
 
@@ -566,8 +565,6 @@ class App:
         bar.pack(fill="x", side="bottom")
         self.status_lbl = ttk.Label(bar, textvariable=self.v_status, style="Bar.TLabel")
         self.status_lbl.pack(side="left")
-        ttk.Button(bar, text="Save", style="Ghost.TButton",
-                   command=self.on_save).pack(side="right")
 
         # Apply the profile / accessibility / hemisphere / appearance / privacy
         # combos live.
@@ -644,10 +641,6 @@ class App:
         # trace is more reliable across platforms than a widget event.
         self.v_weather.trace_add("write", lambda *_: self._on_override_change())
         self.v_time.trace_add("write", lambda *_: self._on_override_change())
-        arow = ttk.Frame(mcard, style="Card.TFrame"); arow.pack(fill="x", pady=(8, 0))
-        # Guaranteed manual trigger, in case a platform doesn't fire the trace.
-        ttk.Button(arow, text="Apply", style="Ghost.TButton",
-                   command=lambda: self._apply_live("Override applied")).pack(side="right")
         return page
 
     # --- Appearance tab ------------------------------------------------
@@ -833,7 +826,39 @@ class App:
     # --- live apply ----------------------------------------------------
     def _on_override_change(self):
         """A manual override changed — apply it right away."""
-        self._apply_live("Override updated")
+        self._schedule_auto_apply("Settings updated")
+
+    def _bind_auto_apply(self):
+        """Persist and apply every main-window setting without action buttons."""
+        variables = (
+            self.v_theme, self.v_wallpaper, self.v_tint, self.v_wpdynamic,
+            self.v_wpshift, self.v_wppatterns, self.v_wpwarmth,
+            self.v_soundmode, self.v_soundinterval, self.v_duck,
+            self.v_tick, self.v_weatherrefresh, self.v_smooth, self.v_season,
+            self.v_multimon,
+        )
+        for variable in variables:
+            variable.trace_add("write", lambda *_: self._schedule_auto_apply())
+
+    def _schedule_auto_apply(self, note="Settings updated"):
+        job = self._auto_apply_job
+        if job:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+        self._auto_apply_job = self.root.after(
+            150, lambda: self._flush_auto_apply(note))
+
+    def _flush_auto_apply(self, note):
+        self._auto_apply_job = None
+        self._apply_live(note)
+
+    def _start_engine(self):
+        self.engine_thread = engine.EngineThread(
+            on_status=lambda st: self.status_queue.put(st))
+        self.engine_thread.start()
+        self.v_status.set("Running — settings apply automatically.")
 
     def _on_city_change(self):
         """City picked — save the new location, re-fetch weather, and apply."""
@@ -866,6 +891,11 @@ class App:
             self.engine_thread.wake()
         self.v_status.set(f"Ambient volume: {int(self.v_volume.get())}%")
 
+    def _on_music_volume(self, *_):
+        """Apply music volume immediately and persist it with other settings."""
+        music.set_volume(self.v_musicvol.get())
+        self._schedule_auto_apply("Music volume updated")
+
     def _apply_live(self, note):
         """
         Persist current settings and apply them *immediately* so a manual
@@ -883,8 +913,7 @@ class App:
                 # the new look (e.g. a picked accent) applies immediately instead
                 # of being suppressed by the signature / redraw-interval checks.
                 eng = self.engine_thread.engine
-                eng._last_theme = None
-                eng._last_wall_at = None
+                eng.invalidate_visuals()
                 self.engine_thread.wake()
                 self.v_status.set(note)
                 return
@@ -969,7 +998,6 @@ class App:
                   text="Drop .mp3 / .ogg / .wav files in the music folder (or Add songs…), "
                        "then Play. Plays alongside the weather ambience.").pack(anchor="w", pady=(6, 0))
 
-        self.v_musicvol.trace_add("write", lambda *_: music.set_volume(self.v_musicvol.get()))
         self.on_music_refresh()
         self._update_music_label()
         return page
@@ -1457,13 +1485,6 @@ class App:
         if self.engine_thread and self.engine_thread.is_alive():
             self.engine_thread.wake()
 
-    def on_save(self):
-        self._collect()
-        if config.save_config(self.cfg):
-            self.v_status.set("Settings saved.")
-        else:
-            messagebox.showerror("Error", "Could not write config.json.")
-
     def on_manage_sounds(self):
         """Show the exact filenames each weather needs, and open the folder."""
         names = "\n".join(f"   •  {label}:   {base}.wav"
@@ -1484,25 +1505,10 @@ class App:
         ok = autostart.set_autostart(self.v_runlogin.get())
         if not ok:
             self.v_runlogin.set(autostart.is_autostart_enabled())
+        self._collect()
+        config.save_config(self.cfg)
         self.v_status.set("Run-at-login: "
                           + ("enabled" if self.v_runlogin.get() else "disabled"))
-
-    def on_toggle_engine(self):
-        if self.engine_thread and self.engine_thread.is_alive():
-            self.engine_thread.stop()
-            self.engine_thread = None
-            self.btn_engine.config(text="▶  Start")
-            self.v_status.set("Stopped.")
-        else:
-            # Save current settings, then start the engine — its first tick
-            # applies theme/wallpaper/sound immediately.
-            self._collect()
-            config.save_config(self.cfg)
-            self.engine_thread = engine.EngineThread(
-                on_status=lambda st: self.status_queue.put(st))
-            self.engine_thread.start()
-            self.btn_engine.config(text="■  Stop")
-            self.v_status.set("Running — applying now…")
 
     def _poll_status_queue(self):
         try:

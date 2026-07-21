@@ -50,8 +50,7 @@ a clip only every few minutes.
 
 ## The wallpaper isn't changing
 
-- Ensure **Weather wallpaper** is ticked and you pressed **▶ Start** (not just
-  Save).
+- Ensure **Weather wallpaper** is ticked. Changes save and apply automatically.
 - Static redraws are rate-limited (`wallpaper_min_interval_seconds`, default
   45s) and only happen when the colour/brightness actually changes — give it a
   moment, or change the manual weather to force a difference.

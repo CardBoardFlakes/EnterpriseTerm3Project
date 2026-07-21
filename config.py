@@ -8,6 +8,7 @@ and the background engine so the two never drift apart.
 import copy
 import json
 import os
+import tempfile
 
 # Absolute path next to this module, so the app reads/writes the SAME config
 # no matter which directory it's launched from. (A relative "config.json" would
@@ -245,12 +246,25 @@ def load_config(path: str = CONFIG_FILE) -> dict:
 
 def save_config(cfg: dict, path: str = CONFIG_FILE) -> bool:
     """Persist *cfg* to *path*. Returns True on success."""
+    directory = os.path.dirname(os.path.abspath(path))
+    tmp_path = None
     try:
-        with open(path, "w") as f:
+        os.makedirs(directory, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+                "w", dir=directory, prefix=".flow-config-", delete=False) as f:
+            tmp_path = f.name
             json.dump(cfg, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
         return True
     except OSError as e:
         print(f"[config] Could not save {path}: {e}")
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
         return False
 
 

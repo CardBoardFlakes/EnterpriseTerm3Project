@@ -18,9 +18,8 @@ pip install -r requirements.txt      # optional deps: requests (weather), pygame
 python main.py                       # launch the GUI
 ```
 
-Then, in the window: pick your settings and press **▶ Start**. That applies the
-theme/wallpaper/sound right away and keeps them updating in the background.
-Press **■ Stop** to halt.
+The engine starts with the window. Every setting is saved and applied
+automatically as you change it.
 
 > **GUI won't open?** `tkinter` ships with Python but isn't a pip package.
 > - macOS (Homebrew): `brew install python-tk` (match your Python version)
@@ -63,7 +62,7 @@ Detailed, task-focused guides live in **[`docs/`](docs/)**:
 
 | Guide | What's inside |
 |---|---|
-| [User guide](docs/USER_GUIDE.md) | First launch, the Dashboard & Appearance tabs, the Focus & Tasks window, Start/Stop, running at login. |
+| [User guide](docs/USER_GUIDE.md) | First launch, the Dashboard & Appearance tabs, the Focus & Tasks window, and running at login. |
 | [Wallpaper guide](docs/WALLPAPER.md) | The static weather wallpaper: weather patterns, sun/moon movement, and the cold-weather warm tint. |
 | [Sound guide](docs/SOUNDS.md) | File names, adding your own clips, variants, loop vs. random playback. |
 | [Tasks & timer guide](docs/TASKS_AND_TIMER.md) | Pomodoro usage and creating daily / one-off scheduled tasks. |

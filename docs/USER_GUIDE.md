@@ -7,7 +7,7 @@ to bottom once — it takes five minutes.
 - [The main window](#the-main-window)
   - [Dashboard tab](#dashboard-tab)
   - [Appearance tab](#appearance-tab)
-- [Starting and stopping](#starting-and-stopping)
+- [Automatic apply](#automatic-apply)
 - [The Focus & Tasks window](#the-focus--tasks-window)
 - [Running automatically at login](#running-automatically-at-login)
 - [Running without the GUI](#running-without-the-gui)
@@ -39,9 +39,8 @@ plays, synthesises placeholder audio into `sounds/`.
 
 ## The main window
 
-The window has a **header** (title + **Focus & Tasks** button + **Start/Stop**),
-two tabs (**Dashboard**, **Appearance**), and a **status bar** at the bottom with
-a **Save** button.
+The window has a **header** (title + **Focus & Tasks** button), two tabs
+(**Dashboard**, **Appearance**), and a status bar at the bottom.
 
 ### Dashboard tab
 
@@ -103,17 +102,11 @@ Looks and performance — set once and forget.
 
 ---
 
-## Starting and stopping
+## Automatic apply
 
-One button runs everything:
-
-- **▶ Start** — saves your current settings, then starts the background engine.
-  Its first pass applies the theme, wallpaper, and sound **immediately**, and it
-  keeps them updated as the weather and time change.
-- **■ Stop** — halts the engine (and stops ambient sound).
-
-**Save** (bottom-right) only writes settings to disk without starting the
-engine — handy if you're editing and not ready to apply.
+The engine starts when the window opens. Every main-window setting is saved and
+applied automatically as you change it; no Start, Step, Apply, or Save action is
+needed.
 
 > **macOS note:** the accent colour only appears in apps launched *after* it's
 > set. Dark/Light mode and the wallpaper update immediately.

@@ -178,9 +178,8 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
 
     # --- Tasks & schedules --------------------------------------------
     if config.feature_enabled(cfg, "tasks") and store is not None:
-        for task in store.due_tasks(now):
+        for task in store.claim_due_tasks(now):
             _run_task_action(task, cfg)
-            store.mark_fired(task, now)
             status["fired_tasks"].append(task.get("title", task.get("id")))
 
     return status
@@ -282,6 +281,13 @@ class Engine:
         self._eased_rgb = None         # displayed colour, eased toward target
         self._eased_at = None          # when the eased colour was last updated
         self.transitioning = False     # True while a colour cross-fade is in progress
+
+    def invalidate_visuals(self):
+        """Force the next step to re-apply theme and rebuild the wallpaper."""
+        self._last_theme = None
+        self._last_wall_key = None
+        self._last_wall_at = None
+        self._last_sun = None
 
     # --- weather (cached) ---------------------------------------------
     def _effective(self, cfg, now):
@@ -500,9 +506,8 @@ class Engine:
 
         # --- tasks ------------------------------------------------------
         if config.feature_enabled(cfg, "tasks") and store is not None:
-            for task in store.due_tasks(now):
+            for task in store.claim_due_tasks(now):
                 _run_task_action(task, cfg)
-                store.mark_fired(task, now)
                 status["fired_tasks"].append(task.get("title", task.get("id")))
 
         return status

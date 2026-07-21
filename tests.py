@@ -60,6 +60,8 @@ def test_config():
               cfg2["weather_refresh_seconds"] == 600 and cfg2["tick_interval_seconds"] == 30)
         check("pomodoro defaults present",
               cfg2["pomodoro"]["work_min"] == 25)
+        check("config save leaves no partial temp file",
+              not any(name.startswith(".flow-config-") for name in os.listdir(d)))
         check("feature gated by master switch",
               config.feature_enabled(cfg2, "dynamic_theme") is False)
         cfg2["enabled"] = True
@@ -765,8 +767,8 @@ def test_tasks():
               gui._task_when_str({"type": "daily", "time": "07:30"}) == "Every day · 07:30")
         check("once 'when' shows a date",
               "·" in gui._task_when_str({"type": "once", "datetime": "2026-08-01T09:00"}))
-        check("does shows weather target",
-              gui._task_does_str({"action": "set_weather", "action_value": "rain"}) == "Weather → rain")
+        check("chime does is friendly",
+              gui._task_does_str({"action": "chime"}) == "Play a chime")
         check("notify does is friendly",
               gui._task_does_str({"action": "notify"}) == "Notify me")
 
@@ -954,59 +956,42 @@ def test_city_change_refetch():
         weather.get_weather = o_get
 
 
-def test_task_recolors_now():
-    section("task changes the background promptly")
+def test_task_claims_once():
+    section("task reminders are claimed exactly once")
     import datetime as dt
-    o_notify, o_chime, o_save = engine.notify, sound.play_chime, config.save_config
-    engine.notify = lambda *a, **k: None
-    sound.play_chime = lambda *a, **k: None
-    config.save_config = lambda *a, **k: True   # never touch the real config file
-    try:
-        check("set_weather is a visual change",
-              engine._run_task_action({"action": "set_weather", "action_value": "storm"},
-                                      config.default_config()) is True)
-        check("set_theme is a visual change",
-              engine._run_task_action({"action": "set_theme", "action_value": "255,0,0"},
-                                      config.default_config()) is True)
-        check("notify is not a visual change",
-              engine._run_task_action({"action": "notify"}, {}) is False)
-    finally:
-        engine.notify, sound.play_chime, config.save_config = o_notify, o_chime, o_save
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "tasks.json")
+        first = tasks_mod.TaskStore(path)
+        now = dt.datetime.now().replace(second=0, microsecond=0)
+        first.add_task("Only once", type="once",
+                       datetime_str=(now - dt.timedelta(minutes=1)).isoformat())
+        stale = tasks_mod.TaskStore(path)
 
-    # A due weather task resets the wallpaper/theme guards so the new look
-    # applies at once instead of waiting out the redraw interval.
-    saved = (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
-             sound.play_ambient, sound.stop_sound, sound.set_volume,
-             sound.pick_base, weather.get_weather, config.save_config)
-    theme.apply_theme_color = lambda *a, **k: "t"
-    wallpaper.apply_weather_wallpaper = lambda *a, **k: True
-    sound.play_ambient = lambda *a, **k: None
-    sound.stop_sound = lambda *a, **k: None
-    sound.set_volume = lambda *a, **k: None
-    sound.pick_base = lambda *a, **k: "x"
-    config.save_config = lambda *a, **k: True         # keep the disk untouched
-    sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
-    ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
-    weather.get_weather = lambda *a, **k: {
-        "condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
-        "temperature": 15, "feels_like": 15, "humidity": 50, "uv_index": 3,
-        "uv_index_max": 5, "pressure": 1010, "rain": 0, "precip_chance": 0,
-        "wind_speed": 5, "wind_gust": 8, "wind_dir": 180, "cloud_cover": 10}
-    try:
-        with tempfile.TemporaryDirectory() as d:
-            store = tasks_mod.TaskStore(os.path.join(d, "tasks.json"))
-            t0 = dt.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
-            store.add_task("Storm", type="once",
-                           datetime_str=(t0 - dt.timedelta(minutes=1)).isoformat(),
-                           action="set_weather", action_value="storm")
-            eng = engine.Engine()
-            eng.step(config.default_config(), store, now=t0)
-            check("wallpaper guard reset after task", eng._last_wall_at is None)
-            check("engine marked transitioning", eng.transitioning is True)
-    finally:
-        (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
-         sound.play_ambient, sound.stop_sound, sound.set_volume,
-         sound.pick_base, weather.get_weather, config.save_config) = saved
+        claimed = first.claim_due_tasks(now)
+        check("first store claims due reminder",
+              [t["title"] for t in claimed] == ["Only once"])
+        check("stale store cannot claim it again", stale.claim_due_tasks(now) == [])
+        check("claim persisted before action",
+              tasks_mod.TaskStore(path).due_tasks(now) == [])
+
+        first.add_task("Concurrent", type="once",
+                       datetime_str=(now - dt.timedelta(minutes=1)).isoformat())
+        import threading
+        barrier = threading.Barrier(2)
+        claims = []
+
+        def claim_at_once():
+            contender = tasks_mod.TaskStore(path)
+            barrier.wait()
+            claims.extend(contender.claim_due_tasks(now))
+
+        workers = [threading.Thread(target=claim_at_once) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        check("concurrent engines still fire once",
+              [task["title"] for task in claims] == ["Concurrent"])
 
 
 def test_sun_tracking():
@@ -1014,7 +999,8 @@ def test_sun_tracking():
     import datetime as dt
     captured = {}
     o_wall, o_get = wallpaper.apply_weather_wallpaper, weather.get_weather
-    wallpaper.apply_weather_wallpaper = lambda *a, **k: captured.update(sun=k.get("sun")) or True
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: captured.update(
+        sun=k.get("sun"), patterns=k.get("patterns"), condition=k.get("condition")) or True
     sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
     ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
     weather.get_weather = lambda *a, **k: {
@@ -1027,16 +1013,52 @@ def test_sun_tracking():
         # wallpaper — so the sun follows the real clock, not a stale value.
         cfg = config.default_config()
         cfg["features"]["dynamic_theme"] = False
+        cfg["wallpaper_dynamic"] = False
         engine.Engine().step(cfg, None, now=dt.datetime.combine(dt.date.today(), dt.time(13, 0)))
         expect = theme.celestial_fraction(None, sr, ss,
                                           dt.datetime.combine(dt.date.today(), dt.time(13, 0)))
         check("step forwards the live sun to the wallpaper",
               captured.get("sun") is not None and abs(captured["sun"] - expect) < 0.02)
+        check("static wallpaper keeps celestial patterns",
+              captured.get("patterns") is True and captured.get("condition") == "clear")
 
         # Time passing moves the sun west (fixed times, clock-independent).
         s1 = theme.celestial_fraction(None, sr, ss, dt.datetime.combine(dt.date.today(), dt.time(10, 0)))
         s2 = theme.celestial_fraction(None, sr, ss, dt.datetime.combine(dt.date.today(), dt.time(14, 0)))
         check("sun advances with time", s2 > s1)
+    finally:
+        wallpaper.apply_weather_wallpaper, weather.get_weather = o_wall, o_get
+
+
+def test_wallpaper_patterns_reapply():
+    section("enabling wallpaper patterns redraws static celestial art")
+    import datetime as dt
+    calls = []
+    o_wall, o_get = wallpaper.apply_weather_wallpaper, weather.get_weather
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: calls.append(k) or True
+    sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
+    ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
+    weather.get_weather = lambda *a, **k: {
+        "condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
+        "temperature": 18, "feels_like": 18, "humidity": 50, "uv_index": 3,
+        "uv_index_max": 5, "pressure": 1010, "rain": 0, "precip_chance": 0,
+        "wind_speed": 5, "wind_gust": 8, "wind_dir": 180, "cloud_cover": 10}
+    try:
+        now = dt.datetime.combine(dt.date.today(), dt.time(13, 0))
+        cfg = config.default_config()
+        cfg["features"]["dynamic_theme"] = False
+        cfg["features"]["ambient_sound"] = False
+        cfg["wallpaper_dynamic"] = False
+        cfg["wallpaper_patterns"] = False
+        eng = engine.Engine()
+        eng.step(cfg, None, now=now)
+
+        cfg["wallpaper_patterns"] = True
+        eng.invalidate_visuals()
+        eng.step(cfg, None, now=now)
+        check("patterns change rebuilds wallpaper", len(calls) == 2)
+        check("rebuilt wallpaper includes celestial patterns",
+              calls[-1]["patterns"] is True and calls[-1]["sun"] is not None)
     finally:
         wallpaper.apply_weather_wallpaper, weather.get_weather = o_wall, o_get
 
@@ -1291,6 +1313,32 @@ def test_gui_helper():
     cfg_keep["location"] = {"lat": 1.0, "lon": 2.0, "name": "Nowhere"}
     out4 = gui.apply_values_to_config(cfg_keep, {**base_vals, "city": "Atlantis"})
     check("unknown city keeps existing location", out4["location"]["name"] == "Nowhere")
+
+    # Main window has no manual Start/Apply/Save controls and every setting
+    # that previously depended on them registers a live-apply trace.
+    import inspect
+    ui_source = inspect.getsource(gui.App._build_ui)
+    check("main window has no Start button", 'text="▶  Start"' not in ui_source)
+    check("main window has no Save button", 'text="Save"' not in ui_source)
+    check("main window has no Apply button", 'text="Apply"' not in ui_source)
+
+    class FakeVar:
+        def __init__(self):
+            self.traces = []
+
+        def trace_add(self, mode, callback):
+            self.traces.append((mode, callback))
+
+    fake = object.__new__(gui.App)
+    names = ("v_theme", "v_wallpaper", "v_tint", "v_wpdynamic", "v_wpshift",
+             "v_wppatterns", "v_wpwarmth", "v_soundmode", "v_soundinterval",
+             "v_duck", "v_tick", "v_weatherrefresh", "v_smooth", "v_season",
+             "v_multimon")
+    for name in names:
+        setattr(fake, name, FakeVar())
+    gui.App._bind_auto_apply(fake)
+    check("all formerly manual settings auto-apply",
+          all(getattr(fake, name).traces for name in names))
 
 
 def test_cities():
@@ -1565,7 +1613,7 @@ def test_notify():
     import subprocess as _sp
 
     o_plat = _sys.platform
-    o_run = _sp.run
+    o_popen = _sp.Popen
     seen = {}
 
     def _capture(cmd, *a, **k):
@@ -1576,7 +1624,7 @@ def test_notify():
         return _R()
 
     try:
-        _sp.run = _capture
+        _sp.Popen = _capture
         _sys.platform = "darwin"
         engine.notify("Flow", "Stand up")
         check("macOS uses osascript", seen["cmd"][0] == "osascript")
@@ -1596,12 +1644,12 @@ def test_notify():
         # A failing subprocess is swallowed, not propagated.
         def _boom(*a, **k):
             raise OSError("no osascript")
-        _sp.run = _boom
+        _sp.Popen = _boom
         _sys.platform = "darwin"
         engine.notify("Flow", "test")   # must not raise
         check("notify swallows subprocess errors", True)
     finally:
-        _sp.run = o_run
+        _sp.Popen = o_popen
         _sys.platform = o_plat
 
 
@@ -1725,8 +1773,9 @@ def main():
     test_autostart()
     test_bugfixes()
     test_city_change_refetch()
-    test_task_recolors_now()
+    test_task_claims_once()
     test_sun_tracking()
+    test_wallpaper_patterns_reapply()
     test_wallpaper_no_revert()
     test_wallpaper_force_refresh()
     test_wallpaper_agent_warmup()
