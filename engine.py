@@ -31,19 +31,28 @@ import tasks as tasks_mod
 # ---------------------------------------------------------
 
 def notify(title: str, message: str):
+    """Show a desktop pop-up for a fired reminder.
+
+    Launched non-blocking (Popen) so a fired reminder never stalls the engine
+    tick. On macOS we use ``display dialog`` rather than ``display
+    notification`` — the latter is silently swallowed when the running process
+    has no notification permission, which is why reminders never appeared; a
+    dialog always pops up and auto-dismisses via ``giving up after``.
+    """
     try:
         if sys.platform == "darwin":
-            subprocess.run(
-                ["osascript", "-e",
-                 f'display notification "{message}" with title "{title}"'],
-                capture_output=True, text=True, timeout=5,
-            )
+            safe_msg = message.replace("\\", "").replace('"', "'")
+            safe_title = title.replace("\\", "").replace('"', "'")
+            script = (f'display dialog "{safe_msg}" with title "{safe_title}" '
+                      f'buttons {{"OK"}} default button "OK" giving up after 20')
+            subprocess.Popen(["osascript", "-e", script],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif sys.platform == "win32":
             ps = (f'[void][System.Reflection.Assembly]::LoadWithPartialName('
                   f'"System.Windows.Forms");'
                   f'[System.Windows.Forms.MessageBox]::Show("{message}","{title}")')
-            subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                           capture_output=True, text=True, timeout=10)
+            subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             print(f"[notify] {title}: {message}")
     except Exception as e:
@@ -54,34 +63,15 @@ def notify(title: str, message: str):
 # Task actions
 # ---------------------------------------------------------
 
-def _run_task_action(task: dict, cfg: dict) -> bool:
-    """Run a task's action. Returns True if it changed the *look* (so the
-    engine can re-apply the theme/wallpaper right away)."""
+def _run_task_action(task: dict, cfg: dict):
+    """Run a task's action — either pop up a notification or play a chime."""
     action = task.get("action", "notify")
-    value = task.get("action_value", "")
     title = task.get("title", "Task")
 
-    if action == "notify":
-        notify("Flow", title)
-    elif action == "chime":
+    if action == "chime":
         sound.play_chime()
-    elif action == "set_weather":
-        if value in weather.CONDITIONS or value == "auto":
-            cfg["manual_weather"] = value
-            config.save_config(cfg)
-            print(f"[engine] Task {title!r} set manual_weather={value}")
-            return True
-    elif action == "set_theme":
-        try:
-            rgb = [int(x) for x in str(value).split(",")]
-            if len(rgb) == 3:
-                cfg["manual_theme_color"] = rgb
-                config.save_config(cfg)
-                print(f"[engine] Task {title!r} set manual_theme_color={rgb}")
-                return True
-        except ValueError:
-            print(f"[engine] Task {title!r} bad set_theme value: {value!r}")
-    return False
+    else:  # "notify" (and any legacy action) shows a pop-up
+        notify("Flow", title)
 
 
 # ---------------------------------------------------------
@@ -166,9 +156,11 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
                 patterns=patterns, warmth=warmth, sun=sun,
                 multi=bool(cfg.get("multi_monitor", True))):
             status["applied"].append("wallpaper")
-    else:
-        print("[wallpaper] feature is OFF — tick 'Weather wallpaper' on the "
-              "Dashboard to change the desktop background.")
+    elif wallpaper.is_showing_ours():
+        # Feature off but a weather wallpaper is still showing — put the user's
+        # real desktop back so it isn't left themed.
+        if wallpaper.restore_original(multi=bool(cfg.get("multi_monitor", True))):
+            status["applied"].append("wallpaper restored")
 
     # --- Ambient sound -------------------------------------------------
     if config.feature_enabled(cfg, "ambient_sound") and other_audio_playing(cfg):
@@ -285,6 +277,8 @@ class Engine:
         self._last_wall_key = None     # (drifted_rgb, brightness_bucket) last drawn
         self._last_wall_at = None
         self._last_sun = None          # sun/moon fraction last drawn (for tracking)
+        self._wall_active = False       # we've been setting the weather wallpaper
+        self._wall_off_handled = False  # restored the original since the feature went off
         self._eased_rgb = None         # displayed colour, eased toward target
         self._eased_at = None          # when the eased colour was last updated
         self.transitioning = False     # True while a colour cross-fade is in progress
@@ -398,6 +392,8 @@ class Engine:
 
         # --- wallpaper: subtle drift, guarded by delta + interval ------
         if config.feature_enabled(cfg, "wallpaper"):
+            self._wall_active = True
+            self._wall_off_handled = False
             dynamic = bool(cfg.get("wallpaper_dynamic", True))
             shift = (cfg.get("wallpaper_shift_strength", 35) / 100.0) if dynamic else 0.0
             patterns = bool(cfg.get("wallpaper_patterns", True))
@@ -440,6 +436,20 @@ class Engine:
                     self._last_wall_at = now
                     self._last_sun = sun
                     status["applied"].append("wallpaper")
+        else:
+            # Weather wallpaper turned off: put the user's real desktop back so
+            # it doesn't stay themed. Do it once per off-period — including when
+            # a weather wallpaper is left over from a previous run — and never
+            # fight a wallpaper the user sets themselves afterwards.
+            if not self._wall_off_handled:
+                if self._wall_active or wallpaper.is_showing_ours():
+                    if wallpaper.restore_original(
+                            multi=bool(cfg.get("multi_monitor", True))):
+                        status["applied"].append("wallpaper restored")
+                    self._last_wall_key = None
+                    self._last_wall_at = None
+                self._wall_active = False
+                self._wall_off_handled = True
 
         # --- sound: loop continuously, or play a random clip now and then --
         if config.feature_enabled(cfg, "ambient_sound") and other_audio_playing(cfg):
@@ -490,18 +500,10 @@ class Engine:
 
         # --- tasks ------------------------------------------------------
         if config.feature_enabled(cfg, "tasks") and store is not None:
-            visual_change = False
             for task in store.due_tasks(now):
-                if _run_task_action(task, cfg):
-                    visual_change = True
+                _run_task_action(task, cfg)
                 store.mark_fired(task, now)
                 status["fired_tasks"].append(task.get("title", task.get("id")))
-            if visual_change:
-                # A task changed the weather/theme — drop the guards so the new
-                # look applies on the very next step (and wake the loop fast).
-                self._last_wall_at = None
-                self._last_theme = None
-                self.transitioning = True
 
         return status
 

@@ -27,6 +27,76 @@ _applied_path = None
 # it a single time and let later changes fade in smoothly.
 _agent_warmed = False
 
+# The user's own desktop wallpaper, saved once before we ever overwrite it, so
+# turning the weather-wallpaper feature off can put it back. Stored as a file
+# in CACHE_DIR so it survives app restarts.
+ORIGINAL_FILE = os.path.join(CACHE_DIR, "original_wallpaper.txt")
+
+
+def _is_ours(path: str) -> bool:
+    """True if *path* is one of the wallpapers this app generated."""
+    try:
+        return os.path.abspath(path).startswith(os.path.abspath(CACHE_DIR))
+    except Exception:
+        return False
+
+
+def get_current_wallpaper():
+    """The desktop's current wallpaper path, or None if it can't be read."""
+    try:
+        if sys.platform == "darwin":
+            res = subprocess.run(
+                ["osascript", "-e",
+                 'tell application "System Events" to get picture of desktop 1'],
+                capture_output=True, text=True, timeout=5)
+            if res.returncode == 0:
+                return res.stdout.strip() or None
+        elif sys.platform == "win32":
+            import ctypes
+            buf = ctypes.create_unicode_buffer(520)
+            ctypes.windll.user32.SystemParametersInfoW(0x0073, 520, buf, 0)  # SPI_GETDESKWALLPAPER
+            return buf.value or None
+    except Exception as e:
+        print(f"[wallpaper] Could not read current wallpaper: {e}")
+    return None
+
+
+def capture_original_once():
+    """Save the user's real wallpaper the first time — before we overwrite it.
+    Skips our own generated images and never clobbers an already-saved value."""
+    try:
+        if os.path.exists(ORIGINAL_FILE):
+            return
+        cur = get_current_wallpaper()
+        if cur and not _is_ours(cur) and os.path.exists(cur):
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            with open(ORIGINAL_FILE, "w") as f:
+                f.write(cur)
+            print(f"[wallpaper] Saved your original desktop wallpaper: {cur}")
+    except Exception as e:
+        print(f"[wallpaper] Could not save original wallpaper: {e}")
+
+
+def is_showing_ours() -> bool:
+    """True if the desktop currently shows one of our generated wallpapers."""
+    cur = get_current_wallpaper()
+    return bool(cur and _is_ours(cur))
+
+
+def restore_original(multi=True) -> bool:
+    """Put the user's saved original wallpaper back. Returns True if it did."""
+    try:
+        if not os.path.exists(ORIGINAL_FILE):
+            return False
+        with open(ORIGINAL_FILE) as f:
+            orig = f.read().strip()
+        if orig and os.path.exists(orig):
+            print(f"[wallpaper] Restoring your original desktop wallpaper: {orig}")
+            return set_wallpaper(orig, multi=multi)
+    except Exception as e:
+        print(f"[wallpaper] Could not restore original wallpaper: {e}")
+    return False
+
 
 # ---------------------------------------------------------
 # Colour helpers
@@ -576,6 +646,7 @@ def apply_weather_wallpaper(r, g, b, brightness, tint_strength=0.4,
                             temperature=None, patterns=True, warmth=True,
                             sun=None, multi=True) -> bool:
     """Build the (optionally drifted) weather image and apply it."""
+    capture_original_once()      # remember the user's desktop before overwriting
     path = build_weather_image(r, g, b, brightness, tint_strength,
                                phase=phase, shift_strength=shift_strength,
                                condition=condition, temperature=temperature,

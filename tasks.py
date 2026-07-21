@@ -3,7 +3,7 @@ User tasks & schedules.
 
 A task either repeats daily at a wall-clock time ("daily") or fires once at
 a specific datetime ("once"). When due, the engine performs the task's
-action (notify / chime / set a weather or theme override).
+action: pop up a notification or play a chime.
 """
 
 import json
@@ -15,7 +15,7 @@ import datetime
 TASKS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks.json")
 
 TASK_TYPES = ["daily", "once"]
-ACTIONS = ["notify", "chime", "set_weather", "set_theme"]
+ACTIONS = ["notify", "chime"]
 
 
 class TaskStore:

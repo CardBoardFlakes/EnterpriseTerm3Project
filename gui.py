@@ -177,8 +177,6 @@ def _fmt_temp(t):
 ACTION_TO_LABEL = {
     "notify": "Notify me",
     "chime": "Play a chime",
-    "set_weather": "Change the weather",
-    "set_theme": "Change accent colour",
 }
 LABEL_TO_ACTION = {v: k for k, v in ACTION_TO_LABEL.items()}
 
@@ -194,9 +192,8 @@ def _task_when_str(t):
 
 
 def _task_does_str(t):
-    a, v = t.get("action", ""), t.get("action_value", "")
-    return {"notify": "Notify me", "chime": "Play a chime",
-            "set_weather": f"Weather → {v}", "set_theme": f"Accent → {v}"}.get(a, a)
+    a = t.get("action", "")
+    return {"notify": "Notify me", "chime": "Play a chime"}.get(a, a)
 
 
 def _uv_label(uv):
@@ -263,7 +260,6 @@ class App:
         self.lbl_cycles = None
         self.music_list = None
         self.btn_music_play = None
-        self._music_want = False   # user asked for music -> auto-advance tracks
 
         root.title("Flow")
         root.geometry("600x780")
@@ -621,9 +617,8 @@ class App:
                         style="Card.TCheckbutton", command=self.on_master_toggle,
                         variable=self.v_enabled).pack(anchor="w", pady=(0, 6))
         for text, var, cmd in [("🎨  Dynamic accent theme", self.v_theme, None),
-                               ("🖼  Weather wallpaper", self.v_wallpaper, None),
-                               ("🔊  Ambient sound", self.v_sound, self.on_sound_toggle),
-                               ("✅  Tasks & schedules", self.v_tasks, None)]:
+                               ("🖼  Weather wallpaper", self.v_wallpaper, self._on_override_change),
+                               ("🔊  Ambient sound", self.v_sound, self.on_sound_toggle)]:
             kw = {"command": cmd} if cmd else {}
             ttk.Checkbutton(fc, text=text, style="Card.TCheckbutton",
                             variable=var, **kw).pack(anchor="w", pady=1)
@@ -650,8 +645,6 @@ class App:
         self.v_weather.trace_add("write", lambda *_: self._on_override_change())
         self.v_time.trace_add("write", lambda *_: self._on_override_change())
         arow = ttk.Frame(mcard, style="Card.TFrame"); arow.pack(fill="x", pady=(8, 0))
-        ttk.Label(arow, text="Overrides apply the moment you change them.",
-                  style="Muted.TLabel").pack(side="left")
         # Guaranteed manual trigger, in case a platform doesn't fire the trace.
         ttk.Button(arow, text="Apply", style="Ghost.TButton",
                    command=lambda: self._apply_live("Override applied")).pack(side="right")
@@ -1005,7 +998,6 @@ class App:
         if self._alive(self.music_list) and self.music_list.curselection():
             idx = self.music_list.curselection()[0]
         if music.play_list(tracks, idx, self.v_musicvol.get()):
-            self._music_want = True
             self._nudge_engine()          # pause ambient right away
         else:
             messagebox.showwarning("Music", "Couldn't play — is pygame installed? (pip install pygame)")
@@ -1025,7 +1017,6 @@ class App:
 
     def on_music_stop(self):
         music.stop()
-        self._music_want = False
         self._nudge_engine()              # resume ambient now that music stopped
         self._update_music_label()
 
@@ -1238,23 +1229,9 @@ class App:
         for w in self.val_row.winfo_children():
             w.destroy()
         action = LABEL_TO_ACTION.get(self.t_action.get(), "notify")
-        if action == "set_weather":
-            ttk.Label(self.val_row, text="Weather", style="Card.TLabel", width=8).pack(side="left")
-            if self.t_value.get() not in config.WEATHER_CHOICES:
-                self.t_value.set("rain")
-            ttk.Combobox(self.val_row, textvariable=self.t_value, state="readonly",
-                         width=10, values=config.WEATHER_CHOICES).pack(side="left")
-        elif action == "set_theme":
-            ttk.Label(self.val_row, text="Colour", style="Card.TLabel", width=8).pack(side="left")
-            if not self.t_value.get() or "," not in self.t_value.get():
-                self.t_value.set("255,150,60")
-            ttk.Entry(self.val_row, textvariable=self.t_value, width=12).pack(side="left")
-            ttk.Label(self.val_row, text="red,green,blue (0–255)",
-                      style="Muted.TLabel").pack(side="left", padx=4)
-        else:
-            self.t_value.set("")
-            msg = "— just shows a notification" if action == "notify" else "— just plays a chime"
-            ttk.Label(self.val_row, text=msg, style="Muted.TLabel").pack(side="left")
+        self.t_value.set("")
+        msg = "— just shows a notification" if action == "notify" else "— just plays a chime"
+        ttk.Label(self.val_row, text=msg, style="Muted.TLabel").pack(side="left")
 
     def _on_task_repeat_change(self):
         """The date picker only makes sense for a one-off reminder."""
@@ -1307,12 +1284,9 @@ class App:
             engine.notify("Timer", "Timer finished.")
             self.v_status.set("Timer finished.")
         self._update_timer_label()
-        # Auto-advance music when a track finishes.
-        if (self._music_want and music.has_playlist()
-                and not music.is_playing() and not music.is_paused()):
-            music.next_track(self.v_musicvol.get())
-        # Keep the music label + Play/Pause button in sync with playback,
-        # even when the state changes on its own (a track ending).
+        # Music plays only when the user presses Play — it never advances or
+        # restarts on its own. When a track ends it simply stops; we just keep
+        # the label + Play/Pause button in sync with that.
         self._update_music_label()
         self.root.after(1000, self._timer_loop)
 
@@ -1371,7 +1345,7 @@ class App:
         except ValueError:
             messagebox.showerror("Bad time", "Enter the time as HH:MM (e.g. 07:30).")
             return
-        value = self.t_value.get().strip() if action in ("set_weather", "set_theme") else ""
+        value = ""
 
         try:
             if self.t_repeat.get() == "Just once":

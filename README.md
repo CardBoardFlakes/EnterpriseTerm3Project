@@ -156,6 +156,8 @@ mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
 / warmth, sound
 selection / variants / modes, tasks, autostart, the Pomodoro timer, the GUI
-value mapping, and the engine's change-guards. All system-mutating calls
-(accent, wallpaper, audio, launchctl/registry) are stubbed, so running the
-tests never changes your machine.
+value mapping + display helpers (icons, temperature, UV band, live-data line),
+idle detection, other-audio detection, desktop notifications, and the engine's
+pure helpers + change-guards. All system-mutating calls
+(accent, wallpaper, audio, notifications, launchctl/registry) are stubbed, so
+running the tests never changes your machine.

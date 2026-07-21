@@ -17,7 +17,6 @@ import wave
 import config
 import weather
 import theme
-import json as _json
 import wallpaper
 import sound
 import tasks as tasks_mod
@@ -899,7 +898,7 @@ def test_bugfixes():
         eng6 = engine.Engine()
         eng6._eased_rgb = (140.0, 118.0, 162.0)    # a stale "purple" mid-fade
         eng6._eased_at = at(12)
-        st6 = eng6.step(cfg6, None, now=at(12))     # dt≈0 => easing would barely move
+        eng6.step(cfg6, None, now=at(12))           # dt≈0 => easing would barely move
         # (no manual colour yet — establishes the eased baseline)
         cfg6["manual_theme_color"] = [0, 238, 0]    # user picks green
         st6b = eng6.step(cfg6, None, now=at(12))
@@ -1131,6 +1130,63 @@ def test_wallpaper_agent_warmup():
     finally:
         (wallpaper._set_wallpaper_macos, wallpaper._refresh_wallpaper_agent_macos,
          wallpaper._applied_path, wallpaper._agent_warmed) = o
+
+
+def test_wallpaper_restore_on_disable():
+    section("disabling weather wallpaper restores the original desktop")
+    import datetime as dt
+    saved = (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+             wallpaper.restore_original, wallpaper.is_showing_ours,
+             sound.play_ambient, sound.stop_sound, sound.set_volume,
+             sound.pick_base, weather.get_weather)
+    counts = {"apply": 0, "restore": 0}
+    theme.apply_theme_color = lambda *a, **k: "t"
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: counts.__setitem__("apply", counts["apply"] + 1) or True
+    wallpaper.restore_original = lambda *a, **k: counts.__setitem__("restore", counts["restore"] + 1) or True
+    wallpaper.is_showing_ours = lambda: True
+    sound.play_ambient = lambda *a, **k: None
+    sound.stop_sound = lambda *a, **k: None
+    sound.set_volume = lambda *a, **k: None
+    sound.pick_base = lambda *a, **k: "x"
+    sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
+    ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
+    weather.get_weather = lambda *a, **k: {
+        "condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
+        "temperature": 15, "feels_like": 15, "humidity": 50, "uv_index": 3,
+        "uv_index_max": 5, "pressure": 1010, "rain": 0, "precip_chance": 0,
+        "wind_speed": 5, "wind_gust": 8, "wind_dir": 180, "cloud_cover": 10}
+    try:
+        now = dt.datetime.combine(dt.date.today(), dt.time(12, 0))
+        cfg = config.default_config()
+        cfg["features"]["ambient_sound"] = False
+        eng = engine.Engine()
+        eng.step(cfg, None, now=now)
+        check("wallpaper set while enabled", counts["apply"] == 1 and counts["restore"] == 0)
+
+        cfg["features"]["wallpaper"] = False        # user unticks it
+        eng.step(cfg, None, now=now)
+        check("restores original once on disable", counts["restore"] == 1)
+        eng.step(cfg, None, now=now)
+        check("does not keep restoring while off", counts["restore"] == 1)
+
+        cfg["features"]["wallpaper"] = True          # re-enable...
+        eng.step(cfg, None, now=now)
+        cfg["features"]["wallpaper"] = False         # ...and disable again
+        eng.step(cfg, None, now=now)
+        check("restores again after re-enable then disable", counts["restore"] == 2)
+
+        # One-shot tick(): feature off + a weather wallpaper still showing.
+        counts["restore"] = 0
+        cfg2 = config.default_config()
+        cfg2["features"]["wallpaper"] = False
+        cfg2["features"]["ambient_sound"] = False
+        engine.tick(cfg2, None, now=now)
+        check("tick restores when off + showing ours", counts["restore"] == 1)
+    finally:
+        (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+         wallpaper.restore_original, wallpaper.is_showing_ours,
+         sound.play_ambient, sound.stop_sound, sound.set_volume,
+         sound.pick_base, weather.get_weather) = saved
 
 
 # ---------------------------------------------------------
@@ -1374,6 +1430,281 @@ def test_engine_guards():
          weather.get_weather) = saved
 
 
+# ---------------------------------------------------------
+# activity (idle detection)
+# ---------------------------------------------------------
+def test_activity():
+    section("activity — idle detection")
+    import sys as _sys
+    import subprocess as _sp
+    import activity
+
+    # The public entry always returns a float, whatever the platform.
+    idle = activity.get_idle_time()
+    check("get_idle_time returns a float", isinstance(idle, float))
+    check("idle time non-negative", idle >= 0.0)
+
+    # Unsupported platform degrades to 0.0 (never crashes / never None).
+    o_plat = _sys.platform
+    _sys.platform = "linux"
+    try:
+        check("unsupported platform => 0.0", activity.get_idle_time() == 0.0)
+    finally:
+        _sys.platform = o_plat
+
+    # Dispatch: each platform routes to its own implementation.
+    o_win, o_mac = activity._get_idle_windows, activity._get_idle_macos
+    activity._get_idle_windows = lambda: 11.0
+    activity._get_idle_macos = lambda: 22.0
+    try:
+        _sys.platform = "win32"
+        check("win32 routes to windows impl", activity.get_idle_time() == 11.0)
+        _sys.platform = "darwin"
+        check("darwin routes to macos impl", activity.get_idle_time() == 22.0)
+    finally:
+        activity._get_idle_windows, activity._get_idle_macos = o_win, o_mac
+        _sys.platform = o_plat
+
+    # macOS impl parses ioreg's HIDIdleTime (nanoseconds -> seconds).
+    o_run = _sp.run
+    try:
+        class _R:
+            stdout = ('  |   "HIDIdleTime" = 4500000000\n'
+                      '  |   "HIDIdleCount" = 3\n')
+        _sp.run = lambda *a, **k: _R()
+        check("macos parses HIDIdleTime seconds",
+              abs(activity._get_idle_macos() - 4.5) < 1e-9)
+
+        class _R2:
+            stdout = "no idle field here\n"
+        _sp.run = lambda *a, **k: _R2()
+        check("macos missing field => 0.0", activity._get_idle_macos() == 0.0)
+
+        def _boom(*a, **k):
+            raise OSError("ioreg unavailable")
+        _sp.run = _boom
+        check("macos subprocess error => 0.0", activity._get_idle_macos() == 0.0)
+    finally:
+        _sp.run = o_run
+
+    # Windows impl swallows errors (ctypes.windll is absent off-Windows).
+    if _sys.platform != "win32":
+        check("windows impl error-safe off Windows",
+              activity._get_idle_windows() == 0.0)
+
+
+# ---------------------------------------------------------
+# audiocheck (other-audio detection)
+# ---------------------------------------------------------
+def test_audiocheck():
+    section("audiocheck — external audio detection")
+    import sys as _sys
+    import subprocess as _sp
+    import audiocheck
+
+    o_plat = _sys.platform
+
+    # Unknown platform can't tell -> None (tri-state, not False).
+    _sys.platform = "linux"
+    try:
+        check("unknown platform => None", audiocheck.external_audio_active() is None)
+    finally:
+        _sys.platform = o_plat
+
+    # Dispatch to the per-platform probe.
+    o_mac, o_win = audiocheck._macos_playing, audiocheck._windows_playing
+    audiocheck._macos_playing = lambda: True
+    audiocheck._windows_playing = lambda: False
+    try:
+        _sys.platform = "darwin"
+        check("darwin routes to macos probe", audiocheck.external_audio_active() is True)
+        _sys.platform = "win32"
+        check("win32 routes to windows probe", audiocheck.external_audio_active() is False)
+        # A probe blowing up is caught and reported as unknown (None).
+        def _boom():
+            raise RuntimeError("probe failed")
+        audiocheck._macos_playing = _boom
+        _sys.platform = "darwin"
+        check("probe error => None", audiocheck.external_audio_active() is None)
+    finally:
+        audiocheck._macos_playing, audiocheck._windows_playing = o_mac, o_win
+        _sys.platform = o_plat
+
+    # macOS probe: not-running app => not playing; running + "playing" => True.
+    o_run = _sp.run
+    try:
+        class _R:
+            def __init__(self, out):
+                self.stdout = out
+        _sp.run = lambda *a, **k: _R("false")
+        check("no media app running => False", audiocheck._macos_playing() is False)
+
+        state = {"n": 0}
+
+        def _seq(*a, **k):
+            # First call: "is it running?"; second: "player state".
+            state["n"] += 1
+            return _R("true") if state["n"] % 2 == 1 else _R("playing")
+        _sp.run = _seq
+        check("running + playing => True", audiocheck._macos_playing() is True)
+    finally:
+        _sp.run = o_run
+
+    # Windows probe returns None when pycaw isn't installed (import fails).
+    if _sys.platform != "win32":
+        check("windows probe => None without pycaw",
+              audiocheck._windows_playing() is None)
+
+
+# ---------------------------------------------------------
+# engine.notify (desktop notification, no OS mutation)
+# ---------------------------------------------------------
+def test_notify():
+    section("notify — cross-platform, error-safe")
+    import sys as _sys
+    import subprocess as _sp
+
+    o_plat = _sys.platform
+    o_run = _sp.run
+    seen = {}
+
+    def _capture(cmd, *a, **k):
+        seen["cmd"] = cmd
+        class _R:
+            stdout = ""
+            returncode = 0
+        return _R()
+
+    try:
+        _sp.run = _capture
+        _sys.platform = "darwin"
+        engine.notify("Flow", "Stand up")
+        check("macOS uses osascript", seen["cmd"][0] == "osascript")
+        check("macOS command carries the message",
+              any("Stand up" in str(part) for part in seen["cmd"]))
+
+        _sys.platform = "win32"
+        engine.notify("Flow", "Break time")
+        check("Windows uses powershell", seen["cmd"][0] == "powershell")
+
+        # Unsupported platform just logs (no subprocess call) and never raises.
+        seen.clear()
+        _sys.platform = "linux"
+        engine.notify("Flow", "hello")
+        check("unsupported platform makes no subprocess call", "cmd" not in seen)
+
+        # A failing subprocess is swallowed, not propagated.
+        def _boom(*a, **k):
+            raise OSError("no osascript")
+        _sp.run = _boom
+        _sys.platform = "darwin"
+        engine.notify("Flow", "test")   # must not raise
+        check("notify swallows subprocess errors", True)
+    finally:
+        _sp.run = o_run
+        _sys.platform = o_plat
+
+
+# ---------------------------------------------------------
+# gui display helpers (pure formatting — no window)
+# ---------------------------------------------------------
+def test_gui_display_helpers():
+    section("gui display helpers")
+    import gui
+
+    # Hex + luminance.
+    check("hex formats rgb", gui._hex((40, 80, 180)) == "#2850b4")
+    check("hex clamps out-of-range", gui._hex((-5, 300, 128)) == "#00ff80")
+    check("luminance white ~1", abs(gui._lum((255, 255, 255)) - 1.0) < 1e-9)
+    check("luminance black 0", gui._lum((0, 0, 0)) == 0.0)
+    check("green brighter than blue (luma)", gui._lum((0, 255, 0)) > gui._lum((0, 0, 255)))
+
+    # Palette: a very dark accent is lifted so it stays a usable button colour,
+    # and the foreground flips for contrast.
+    pal = gui.build_palette(True, (5, 5, 5))
+    check("palette has accent + fg", "ACCENT" in pal and "ACCENT_FG" in pal)
+    check("dark accent lifted (not near-black)", pal["ACCENT"] != gui._hex((5, 5, 5)))
+    light = gui.build_palette(False, (250, 250, 120))
+    check("bright accent => dark foreground", light["ACCENT_FG"] == "#0d1117")
+
+    # Weather icon selection (day/night aware).
+    check("storm icon", gui._weather_icon("storm", False) == "⛈️")
+    check("rain icon", gui._weather_icon("rain", True) == "🌧️")
+    check("cloud icon", gui._weather_icon("cloud", False) == "⛅")
+    check("cloudnight still a cloud icon", gui._weather_icon("cloudnight", True) == "⛅")
+    check("clear day => sun", gui._weather_icon("clear", False) == "☀️")
+    check("clear night => moon", gui._weather_icon("clear", True) == "🌙")
+    check("night => moon", gui._weather_icon("night", True) == "🌙")
+    check("unknown => fallback", gui._weather_icon("fog", False) == "🌡️")
+
+    # Temperature formatting.
+    check("temp rounds to whole degrees", gui._fmt_temp(20.4) == "20°C")
+    check("temp None => dash", gui._fmt_temp(None) == "—")
+    check("temp non-numeric => dash", gui._fmt_temp("hot") == "—")
+
+    # UV label with risk band.
+    check("uv low", gui._uv_label(1) == "UV 1 (low)")
+    check("uv moderate", gui._uv_label(5) == "UV 5 (moderate)")
+    check("uv high", gui._uv_label(7) == "UV 7 (high)")
+    check("uv very high", gui._uv_label(9) == "UV 9 (very high)")
+    check("uv extreme", gui._uv_label(12) == "UV 12 (extreme)")
+    check("uv None => None", gui._uv_label(None) is None)
+    check("uv bad => None", gui._uv_label("x") is None)
+
+    # Live-data detail line.
+    line = gui._fmt_details({
+        "feels_like": 18.6, "humidity": 55, "uv_index": 4,
+        "wind_speed": 12, "wind_gust": 20, "precip_chance": 10, "pressure": 1013,
+    })
+    for want in ["Feels 19°", "Humidity 55%", "UV 4", "Wind 12 km/h",
+                 "gust 20", "Rain 10%", "1013 hPa"]:
+        check(f"details contains {want!r}", want in line)
+    check("empty details => placeholder",
+          gui._fmt_details({}) == "live data unavailable")
+    check("uv_index_max used when uv_index missing",
+          "UV 6" in gui._fmt_details({"uv_index_max": 6}))
+
+
+# ---------------------------------------------------------
+# engine pure helpers
+# ---------------------------------------------------------
+def test_engine_helpers():
+    section("engine pure helpers")
+    import datetime as dt
+
+    # Colour delta is the max per-channel difference.
+    check("color delta max channel", engine._color_delta((10, 20, 30), (10, 25, 90)) == 60)
+    check("color delta zero when equal", engine._color_delta((1, 2, 3), (1, 2, 3)) == 0)
+
+    # _style_color: none profile + no accessibility is an int-tuple identity.
+    base = config.default_config()
+    base["active_profile"] = "none"
+    base["accessibility_mode"] = "none"
+    styled = engine._style_color((60, 120, 200), base)
+    check("style none => unchanged", styled == (60, 120, 200))
+    check("style returns int tuple", all(isinstance(c, int) for c in styled))
+
+    # High-contrast accessibility bends the colour to a bold one.
+    hc = config.default_config()
+    hc["active_profile"] = "none"
+    hc["accessibility_mode"] = "high_contrast"
+    check("style high-contrast intensifies",
+          _chroma(engine._style_color((90, 120, 170), hc)) > _chroma((90, 120, 170)))
+
+    # _season_now: off => None; on (south, July) => winter.
+    off = config.default_config()
+    off["seasonal_themes"] = False
+    check("season off => None", engine._season_now(off, dt.datetime(2026, 7, 15, 12)) is None)
+    on = config.default_config()
+    on["seasonal_themes"] = True
+    on["hemisphere"] = "south"
+    check("season on (south July) => winter",
+          engine._season_now(on, dt.datetime(2026, 7, 15, 12)) == "winter")
+    on["hemisphere"] = "north"
+    check("season on (north July) => summer",
+          engine._season_now(on, dt.datetime(2026, 7, 15, 12)) == "summer")
+
+
 def main():
     test_config()
     test_weather()
@@ -1399,6 +1730,7 @@ def main():
     test_wallpaper_no_revert()
     test_wallpaper_force_refresh()
     test_wallpaper_agent_warmup()
+    test_wallpaper_restore_on_disable()
     test_engine()
     test_pomodoro()
     test_clocks()
@@ -1406,6 +1738,11 @@ def main():
     test_engine_guards()
     test_gui_helper()
     test_cities()
+    test_activity()
+    test_audiocheck()
+    test_notify()
+    test_gui_display_helpers()
+    test_engine_helpers()
     print(f"\n{'='*40}\nRESULT: {_passed} passed, {_failed} failed")
     return 1 if _failed else 0
 

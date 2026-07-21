@@ -84,8 +84,7 @@ with an accent tinted to the current sky — so the app matches your desktop.
 - *Accent colour* — `auto`, or an exact `r,g,b`. Use **Pick…** for a colour
   picker (the swatch previews your choice) or **Auto** to clear it.
 
-> Manual overrides apply **immediately** when you change them — no need to press
-> Start. (On macOS the *accent* colour snaps to the nearest named system accent,
+> (On macOS the *accent* colour snaps to the nearest named system accent,
 > so daytime phases may look similar there; the **wallpaper** shows the change
 > clearly.)
 
