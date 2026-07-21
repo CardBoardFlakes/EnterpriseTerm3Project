@@ -747,6 +747,22 @@ def test_duck_other_audio():
          sound.pick_base, weather.get_weather, ac.external_audio_active,
          music.is_playing) = saved
 
+    cfg = config.default_config()
+    cfg["tick_interval_seconds"] = 30
+    cfg["pause_when_other_audio"] = True
+    eng = engine.Engine()
+    check("paused ambient polls soon enough to resume",
+          engine._engine_poll_interval(cfg, eng, 30) == 5)
+    cfg["pause_when_other_audio"] = False
+    check("idle engine retains configured cadence",
+          engine._engine_poll_interval(cfg, eng, 30) == 30)
+    eng._sound_on = True
+    check("playing ambient monitors dropped playback",
+          engine._engine_poll_interval(cfg, eng, 30) == 5)
+    eng.transitioning = True
+    check("visual transition keeps fastest cadence",
+          engine._engine_poll_interval(cfg, eng, 30) == 0.5)
+
 
 def test_audio_priority():
     section("audio priority: chime > music > ambient")

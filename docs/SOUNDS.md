@@ -104,6 +104,9 @@ ambience, and stopping or pausing the song starts ambience again.
 Tick **Pause ambient when other audio is playing** (Settings → Sound) to extend
 that behavior to detectable external audio:
 
+Flow checks for audio changes every five seconds while this option is enabled,
+then resumes ambience after the other audio stops.
+
 - **macOS** — Spotify / Apple Music that are already running (their player
   state is `playing`). Browser/YouTube audio can't be detected this way.
 - **Windows** — essentially any app, if [`pycaw`](https://pypi.org/project/pycaw/)

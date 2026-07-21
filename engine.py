@@ -247,6 +247,15 @@ def _pattern_condition(condition, is_night):
     return condition
 
 
+def _engine_poll_interval(cfg, eng, tick_interval):
+    """Return cadence needed for active visual or audio monitoring."""
+    if eng.transitioning:
+        return 0.5
+    monitor_audio = config.feature_enabled(cfg, "ambient_sound") and (
+        eng._sound_on or cfg.get("pause_when_other_audio", False))
+    return min(tick_interval, 5) if monitor_audio else tick_interval
+
+
 class Engine:
     """
     Holds state between steps so each step is cheap:
@@ -531,9 +540,9 @@ class EngineThread(threading.Thread):
                     and not sound.ambient_is_playing()):
                 self._last_full = None
 
-            # Step often while a colour cross-fade is in progress so the
-            # transition is smooth; otherwise on the normal cadence.
-            full_iv = 0.5 if self.engine.transitioning else tick_iv
+            # Step often enough to animate transitions and detect both the
+            # start and end of higher-priority audio.
+            full_iv = _engine_poll_interval(cfg, self.engine, tick_iv)
             if self._last_full is None or (mono - self._last_full) >= full_iv:
                 try:
                     self.last_status = self.engine.step(cfg, store, now)
@@ -543,9 +552,8 @@ class EngineThread(threading.Thread):
                     print(f"[engine] step failed: {e}")
                 self._last_full = mono
 
-            sleep = 0.5 if self.engine.transitioning else (
-                min(tick_iv, 5) if self.engine._sound_on else tick_iv)
-            self._wake.wait(timeout=max(0.05, sleep))
+            sleep_iv = _engine_poll_interval(cfg, self.engine, tick_iv)
+            self._wake.wait(timeout=max(0.05, sleep_iv))
             self._wake.clear()
         sound.stop_sound()
 
@@ -566,7 +574,7 @@ def run_forever(config_path=config.CONFIG_FILE, tasks_path=tasks_mod.TASKS_FILE)
                     and not sound.ambient_is_playing()):
                 last_full = None
 
-            full_iv = 0.5 if eng.transitioning else tick_iv
+            full_iv = _engine_poll_interval(cfg, eng, tick_iv)
             if last_full is None or (mono - last_full) >= full_iv:
                 try:
                     eng.step(cfg, store)
@@ -574,9 +582,8 @@ def run_forever(config_path=config.CONFIG_FILE, tasks_path=tasks_mod.TASKS_FILE)
                     print(f"[engine] step failed: {e}")
                 last_full = mono
 
-            sleep = 0.5 if eng.transitioning else (
-                min(tick_iv, 5) if eng._sound_on else tick_iv)
-            time.sleep(max(0.05, sleep))
+            sleep_iv = _engine_poll_interval(cfg, eng, tick_iv)
+            time.sleep(max(0.05, sleep_iv))
     except KeyboardInterrupt:
         sound.stop_sound()
         print("[engine] Background mode stopped.")
