@@ -114,8 +114,9 @@ cards do not fit; the scrollbar hides when everything is visible.
   [Wallpaper guide](WALLPAPER.md).
 - **Sound** — ambient volume, optional pause for detectable external audio, and
   a **Sound files…** button that lists required filenames and opens the folder.
-  Flow's own music always pauses ambience; otherwise ambience loops
-  continuously. See the [Sound guide](SOUNDS.md).
+  Flow's own music always pauses ambience, and stopping or pausing it resumes
+  ambience even while the music window remains open. Flow's own audio devices
+  are not mistaken for external audio. See the [Sound guide](SOUNDS.md).
 - **Seasons & transitions** — gradual colour transitions, seasonal palette,
   and automatic or fixed hemisphere.
 - **Device appearance** — follow time of day or lock the device and Flow window

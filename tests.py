@@ -1922,16 +1922,37 @@ def test_audiocheck():
 
     # macOS CoreAudio probe detects any other process with active output.
     o_core = audiocheck._macos_coreaudio_processes
+    o_is_flow = audiocheck._is_flow_process
     try:
         own = os.getpid()
+        peer = own + 1
+        external = own + 2
+        audiocheck._is_flow_process = lambda pid: pid in (own, peer)
         audiocheck._macos_coreaudio_processes = lambda: [(own, True)]
         check("own macOS audio is ignored", audiocheck._macos_playing() is False)
-        audiocheck._macos_coreaudio_processes = lambda: [(own, True), (own + 1, True)]
+        audiocheck._macos_coreaudio_processes = lambda: [(peer, True)]
+        check("peer Flow audio is ignored", audiocheck._macos_playing() is False)
+        audiocheck._macos_coreaudio_processes = lambda: [(own, True), (external, True)]
         check("other macOS output is detected", audiocheck._macos_playing() is True)
-        audiocheck._macos_coreaudio_processes = lambda: [(own + 1, False)]
+        audiocheck._macos_coreaudio_processes = lambda: [(external, False)]
         check("idle macOS audio process is ignored", audiocheck._macos_playing() is False)
     finally:
         audiocheck._macos_coreaudio_processes = o_core
+        audiocheck._is_flow_process = o_is_flow
+
+    # A live PID registration is visible to other Flow process probes and
+    # disappears when its process lease is released.
+    registered_pid = os.getpid() + 1000000
+    registration = processlock.ProcessFileLock(
+        audiocheck._flow_process_path(registered_pid))
+    try:
+        check("Flow process registration acquires", registration.acquire() is True)
+        check("registered Flow process is recognised",
+              audiocheck._is_flow_process(registered_pid) is True)
+    finally:
+        registration.release()
+    check("released Flow process registration expires",
+          audiocheck._is_flow_process(registered_pid) is False)
 
     # Older-macOS fallback: not-running app => not playing; running + playing.
     o_run = _sp.run

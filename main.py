@@ -12,6 +12,7 @@ import sys
 import config
 import tasks as tasks_mod
 import engine
+import audiocheck
 
 
 def run_once():
@@ -22,6 +23,7 @@ def run_once():
 
 
 def main():
+    audiocheck.register_flow_process()
     args = sys.argv[1:]
 
     if "--background" in args:

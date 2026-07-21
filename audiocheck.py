@@ -18,7 +18,31 @@ Coverage is platform-specific:
 import os
 import sys
 
+import processlock
+
 _MACOS_MEDIA_APPS = ("Spotify", "Music")
+_FLOW_NAMESPACE = os.path.dirname(os.path.abspath(__file__))
+_flow_process_lock = None
+
+
+def _flow_process_path(pid):
+    return processlock.path(f"process-{pid}", _FLOW_NAMESPACE)
+
+
+def register_flow_process():
+    """Mark this process so Flow never mistakes its audio for another app."""
+    global _flow_process_lock
+    if _flow_process_lock is None:
+        _flow_process_lock = processlock.ProcessFileLock(
+            _flow_process_path(os.getpid()))
+    return _flow_process_lock.acquire()
+
+
+def _is_flow_process(pid):
+    if pid == os.getpid():
+        return True
+    return processlock.ProcessFileLock(
+        _flow_process_path(pid)).held_elsewhere()
 
 
 def external_audio_active():
@@ -36,8 +60,9 @@ def external_audio_active():
 def _macos_playing():
     processes = _macos_coreaudio_processes()
     if processes is not None:
-        own = os.getpid()
-        return any(pid != own and running for pid, running in processes)
+        return any(
+            running and not _is_flow_process(pid)
+            for pid, running in processes)
     return _macos_media_app_playing()
 
 
@@ -131,7 +156,6 @@ def _windows_playing():
         from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
     except Exception:
         return None            # pycaw not installed -> can't tell
-    own = os.getpid()
     try:
         sessions = AudioUtilities.GetAllSessions()
     except Exception:
@@ -139,7 +163,7 @@ def _windows_playing():
     for s in sessions:
         try:
             proc = s.Process
-            if not proc or proc.pid == own:
+            if not proc or _is_flow_process(proc.pid):
                 continue
             meter = s._ctl.QueryInterface(IAudioMeterInformation)
             if meter.GetPeakValue() > 0.01:   # actually emitting sound

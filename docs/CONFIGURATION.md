@@ -67,7 +67,7 @@ Under `"features"`; each switch operates independently of `enabled`.
 |---|---|---|---|
 | `sound_volume` | int 0–100 | `25` | Ambient volume. |
 | `music_volume` | int 0–100 | `60` | Volume for the separate local music player. |
-| `pause_when_other_audio` | bool | `false` | Stop ambience for other app audio. Uses CoreAudio process output on macOS and `pycaw` sessions on Windows. Flow's own music always takes priority. |
+| `pause_when_other_audio` | bool | `false` | Stop ambience for other app audio. Uses CoreAudio process output on macOS and `pycaw` sessions on Windows, excluding Flow's own registered processes. Flow's music always takes priority and ambience resumes when it stops. |
 
 See the [sound guide](SOUNDS.md) for file names and variants.
 

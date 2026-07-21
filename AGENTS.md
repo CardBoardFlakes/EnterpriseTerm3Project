@@ -75,6 +75,10 @@ shared wake marker, so auto-apply remains immediate.
   per-tick OS writes.
 - **Only one engine loop runs at a time.** GUI and run-at-login processes may
   overlap; preserve the engine lease, shared wake marker, and audio locks.
+- **Register every app entry-point process with `audiocheck`.** CoreAudio and
+  Windows audio sessions can keep reporting Flow's mixer after music stops;
+  external-audio detection must exclude all registered Flow PIDs, while the
+  shared music lock continues to give active Flow music priority.
 - **`enabled` is select-all UI state, not an engine gate.** Every entry under
   `features` works independently while `enabled` is false. Clearing select-all
   clears those entries and must still run wallpaper/sound cleanup.

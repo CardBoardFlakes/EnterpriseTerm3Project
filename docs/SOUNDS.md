@@ -116,7 +116,10 @@ then resumes ambience after the other audio stops.
 Flow music priority works without `pycaw` and without the external-audio option.
 If GUI and run-at-login background modes overlap, they share one engine owner.
 Opening or closing the GUI therefore does not stop, duplicate, or restart the
-ambient loop. Flow music priority is also shared across those processes.
+ambient loop. Flow music priority is also shared across those processes. Flow
+also excludes its own GUI and background audio devices from “other audio”
+detection, so a mixer that remains open after music stops cannot prevent the
+ambience from resuming.
 
 ---
 

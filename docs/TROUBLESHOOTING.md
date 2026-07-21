@@ -47,6 +47,10 @@ With **Pause ambient when other audio is playing** selected, Flow checks every
 five seconds and resumes after other output ends. On Windows this needs `pycaw`;
 macOS uses built-in CoreAudio and needs no extra package.
 
+Flow ignores audio devices owned by its own GUI and background processes. This
+means stopping Flow music resumes ambience even when the music mixer remains
+open but silent.
+
 Opening the GUI while the run-at-login background process is active is safe:
 both processes share one engine owner. If an older build only plays ambience
 after the GUI closes, quit all Flow processes once and reopen the updated app.
