@@ -12,7 +12,7 @@ is a still PNG that the app regenerates and cross-fades as conditions change.
 
 ## Wallpaper look
 
-On the **Appearance** tab, the **Wallpaper look** card controls the static look:
+On the **Settings** tab, the **Wallpaper look** card controls the static look:
 
 - **Weather tint strength** — how strongly the weather colour shows vs. a
   neutral base.

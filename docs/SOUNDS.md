@@ -7,7 +7,7 @@ of day. It's optional — if `pygame` isn't installed, sound is silently skipped
 - [The sound files](#the-sound-files)
 - [Using your own sounds](#using-your-own-sounds)
 - [Variants (multiple clips per condition)](#variants-multiple-clips-per-condition)
-- [Loop vs. random playback](#loop-vs-random-playback)
+- [Continuous playback](#continuous-playback)
 - [Placeholder sounds](#placeholder-sounds)
 
 ---
@@ -15,21 +15,22 @@ of day. It's optional — if `pygame` isn't installed, sound is silently skipped
 ## Turning it on
 
 1. On the **Dashboard** tab, tick **Ambient sound**.
-2. On the **Appearance** tab, set the **Ambient volume** (subtle by default).
-3. Press **▶ Start**.
+2. On the **Settings** tab, set the **Ambient volume** (subtle by default).
+
+The engine starts with the app; no Start action is needed.
 
 ---
 
 ## The sound files
 
 Sounds live in the `sounds/` folder and are named by condition, so replacing
-them is obvious. The **Appearance → Sound → Sound files…** button lists these
+them is obvious. The **Settings → Sound → Sound files…** button lists these
 names and opens the folder for you.
 
 | When it plays | Filename |
 |---|---|
 | Clear sky, daytime | `clearday.wav` |
-| Clear sky, night (and the `night` condition) | `clearnight.wav` |
+| Clear sky, night | `clearnight.wav` |
 | Cloudy — **or a clear but windy sky** | `cloud.wav` |
 | Rain | `rain.wav` |
 | Storm | `storm.wav` |
@@ -44,8 +45,8 @@ first.)
 > `clearday`/`clearnight`.
 
 > The `sounds/` folder is found automatically next to the app, so your files
-> are picked up no matter where you launch from. Sound only plays while the
-> engine is **Started** (not with `--once`, which exits immediately).
+> are picked up no matter where you launch from. Sound plays while the app or
+> `--background` engine is running (`--once` exits immediately).
 
 ---
 
@@ -56,10 +57,9 @@ overwriting the placeholders. No restart or config change needed — the engine
 picks up the new file the next time that sound plays.
 
 Tips:
-- Loopable clips (a few seconds to a minute, seamless) work best for **loop**
-  mode.
-- The placeholder synth never overwrites a file that already exists, so your
-  custom audio is safe.
+- Loopable clips (a few seconds to a minute, seamless) work best.
+- Generated legacy clips are upgraded automatically, but files whose contents
+  do not match a known generated clip are treated as custom and preserved.
 
 ---
 
@@ -85,22 +85,18 @@ ambience starts. This works for every condition (`clearday2.wav`,
 
 ---
 
-## Loop vs. random playback
+## Continuous playback
 
-Choose the **Playback** style on the Appearance → Sound card:
-
-- **loop** — the chosen clip plays continuously in the background. When the
-  weather changes, it switches (and picks a fresh random variant).
-- **random** — no continuous loop. A single clip plays now and then — roughly
-  every **N minutes** (set by the interval spinbox), with a bit of jitter so it
-  never feels metronomic. Great for occasional birdsong / distant thunder rather
-  than a constant bed of sound.
+The chosen ambience loops continuously in the background. When weather or time
+changes, the engine selects the matching sound and may pick a fresh variant. If
+the operating system drops the audio channel, the engine detects that and
+restarts it.
 
 ---
 
 ## Pause when other audio plays
 
-Tick **Pause ambient when other audio is playing** (Appearance → Sound) and the
+Tick **Pause ambient when other audio is playing** (Settings → Sound) and the
 weather ambience automatically stops while something else is playing, then
 resumes when it stops. It ducks for:
 
@@ -118,9 +114,11 @@ sources may not be detected.
 
 ## Placeholder sounds
 
-If a base file is missing, the app synthesises a simple placeholder loop for it
-on first use (standard-library `wave`, no dependencies) so the feature works out
-of the box. Replace any of them with real audio whenever you like — see
+If a base file is missing, the app synthesises a longer, softly levelled loop
+for it on first use (standard-library `wave`, no dependencies) so the feature
+works out of the box. Clear night uses quiet grasshopper-like calls; rain,
+cloud, storm, and clear day use gentle condition-matched textures. Replace any
+of them with your own audio whenever you like — see
 [Using your own sounds](#using-your-own-sounds).
 
 Sound not playing at all? See
@@ -136,8 +134,8 @@ in the background while you work. Open **⏱ Focus & Tasks → Music**:
 - **Add songs…** — pick `.mp3` / `.ogg` / `.wav` files; they're copied into the
   `music/` folder (next to the app). Or drop files there yourself and hit
   **Refresh**.
-- **Play / ⏸ / ⏹ / ⏮ / ⏭** — play the selected track (double-click also plays);
-  it auto-advances to the next song when one ends.
+- **Play / ⏸ / ⏹ / ⏮ / ⏭** — play the selected track (double-click also plays)
+  and move through the playlist manually.
 - **Music volume** — independent of the ambient volume; the two mix together.
 - **Open music folder** — reveal the folder in your file manager.
 

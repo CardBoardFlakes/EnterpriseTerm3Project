@@ -45,10 +45,6 @@ DEFAULTS = {
 
     # Sound.
     "sound_volume": 25,           # percent 0-100 — "subtle" by default
-    # Playback style: "loop" plays the ambience continuously; "random" plays a
-    # single (randomly chosen) clip now and then, roughly every N minutes.
-    "sound_mode": "loop",         # loop | random
-    "sound_interval_minutes": 5,  # random mode: average gap between plays
     "music_volume": 60,           # your own music (separate from ambience)
     # Pause the app's ambient sound while other audio is playing (our own music
     # player, or — best effort — another app like Spotify / Apple Music).
@@ -59,7 +55,7 @@ DEFAULTS = {
     "location": {"lat": -33.8688, "lon": 151.2093, "name": "Sydney"},
 
     # Manual overrides. "auto" / None means "use live data".
-    "manual_weather": "auto",     # auto|clear|cloud|rain|storm|night
+    "manual_weather": "auto",     # auto|clear|cloud|rain|storm
     "manual_time":    "auto",     # auto | sunrise|morning|midday|afternoon|sunset|dusk|night
     "manual_theme_color": None,   # null or [r, g, b]
 
@@ -108,10 +104,9 @@ DEFAULTS = {
 }
 
 # Allowed values for the override dropdowns — shared with the GUI.
-WEATHER_CHOICES = ["auto", "clear", "cloud", "rain", "storm", "night"]
+WEATHER_CHOICES = ["auto", "clear", "cloud", "rain", "storm"]
 TIME_CHOICES = ["auto", "sunrise", "morning", "midday", "afternoon", "sunset", "dusk", "night"]
 FEATURE_KEYS = ["dynamic_theme", "wallpaper", "ambient_sound", "tasks"]
-SOUND_MODES = ["loop", "random"]
 PROFILE_CHOICES = ["none", "focus", "creativity", "relax"]
 ACCESSIBILITY_CHOICES = ["none", "high_contrast"]
 HEMISPHERE_CHOICES = ["auto", "north", "south"]
@@ -224,7 +219,8 @@ def default_config() -> dict:
 # Settings that used to exist but have since been removed. They're stripped
 # from any loaded config so old files get cleaned up on the next save.
 RETIRED_KEYS = ("location_precision", "wallpaper_backend", "wallpaper_animated",
-                "wallpaper_animated_fps", "wallpaper_load_ceiling")
+                "wallpaper_animated_fps", "wallpaper_load_ceiling", "sound_mode",
+                "sound_interval_minutes")
 
 
 def load_config(path: str = CONFIG_FILE) -> dict:
@@ -238,7 +234,10 @@ def load_config(path: str = CONFIG_FILE) -> dict:
             raise ValueError("config root is not an object")
         for k in RETIRED_KEYS:
             data.pop(k, None)
-        return _deep_merge(DEFAULTS, data)
+        merged = _deep_merge(DEFAULTS, data)
+        if str(merged.get("manual_weather", "auto")).lower() not in WEATHER_CHOICES:
+            merged["manual_weather"] = "auto"
+        return merged
     except (json.JSONDecodeError, OSError, ValueError) as e:
         print(f"[config] Could not load {path}, using defaults: {e}")
         return default_config()

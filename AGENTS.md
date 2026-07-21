@@ -62,7 +62,7 @@ live-apply). Both must be kept consistent when you change behaviour.
 | `pomodoro.py`, `clocks.py` | Timers |
 | `tasks.py` | Task/schedule store (`tasks.json`) |
 | `activity.py`, `autostart.py` | Idle detection; run-at-login |
-| `gui.py` | Tk UI (Dashboard + Appearance tabs; separate Focus & Tasks window) |
+| `gui.py` | Tk UI (Dashboard + Settings tabs; separate Focus & Tasks window) |
 
 ## Conventions
 

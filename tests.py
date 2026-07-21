@@ -70,9 +70,13 @@ def test_config():
         # Retired keys are stripped from old config files on load.
         import json as _json
         with open(p, "w") as f:
-            _json.dump({"enabled": True, "location_precision": 2}, f)
+            _json.dump({"enabled": True, "location_precision": 2,
+                        "sound_mode": "random", "sound_interval_minutes": 5,
+                        "manual_weather": "night"}, f)
         cfg3 = config.load_config(p)
         check("retired location_precision dropped", "location_precision" not in cfg3)
+        check("retired random sound mode dropped", "sound_mode" not in cfg3)
+        check("legacy night weather becomes auto", cfg3["manual_weather"] == "auto")
 
 
 # ---------------------------------------------------------
@@ -109,6 +113,9 @@ def test_weather():
         check("manual time night", weather.get_effective_weather(cfg)["is_night"] is True)
         cfg["manual_time"] = "day"
         check("manual time day", weather.get_effective_weather(cfg)["is_night"] is False)
+        cfg["manual_weather"] = "night"
+        check("night is not a weather override",
+              weather.get_effective_weather(cfg)["condition"] == "clear")
     finally:
         weather.get_weather = orig
 
@@ -498,10 +505,62 @@ def test_sound():
         sample = os.path.join(d, "rain.wav")
         with wave.open(sample, "rb") as wf:
             check("wav mono 16-bit", wf.getnchannels() == 1 and wf.getsampwidth() == 2)
-            check("wav has frames", wf.getnframes() > 1000)
+            check("ambient loop is long enough", wf.getnframes() >= wf.getframerate() * 10)
         # second call creates nothing new
         again = sound.ensure_placeholder_sounds(directory=d)
         check("placeholders idempotent", again == [])
+        custom = os.path.join(d, "rain.wav")
+        with open(custom, "wb") as f:
+            f.write(b"custom rain")
+        check("custom sounds are preserved", sound.ensure_placeholder_sounds(d) == [])
+        with open(custom, "rb") as f:
+            check("custom sound bytes unchanged", f.read() == b"custom rain")
+
+        class FakeChannel:
+            def __init__(self):
+                self.busy = True
+
+            def get_busy(self):
+                return self.busy
+
+        class FakeSound:
+            def __init__(self):
+                self.channel = FakeChannel()
+                self.loops = None
+
+            def set_volume(self, _value):
+                pass
+
+            def play(self, loops=0):
+                self.loops = loops
+                return self.channel
+
+            def stop(self):
+                self.channel.busy = False
+
+        class FakeMixer:
+            def __init__(self):
+                self.loaded = FakeSound()
+
+            def Sound(self, _path):
+                return self.loaded
+
+        old = (sound._ensure_mixer, sound._mixer, sound.current_sound,
+               sound._current_channel, sound._current_path)
+        try:
+            mixer = FakeMixer()
+            sound._ensure_mixer = lambda: True
+            sound._mixer = mixer
+            sound.current_sound = None
+            sound._current_channel = None
+            check("ambient playback starts", sound.play_sound(sample, loop=True) is True)
+            check("pygame receives infinite-loop flag", mixer.loaded.loops == -1)
+            check("active channel reports playing", sound.ambient_is_playing() is True)
+            mixer.loaded.channel.busy = False
+            check("dropped channel reports stopped", sound.ambient_is_playing() is False)
+        finally:
+            (sound._ensure_mixer, sound._mixer, sound.current_sound,
+             sound._current_channel, sound._current_path) = old
 
 
 def test_music():
@@ -660,7 +719,7 @@ def test_audio_priority():
 
 
 def test_sound_variants_and_modes():
-    section("sound variants + random mode")
+    section("sound variants + continuous loop")
     import random as _r
     import datetime as dt
 
@@ -691,15 +750,15 @@ def test_sound_variants_and_modes():
     check("cloudy stays cloud", sound.ambient_base("cloud", False, 0) == "cloud")
     check("sounds dir is absolute", os.path.isabs(sound.SOUNDS_DIR))
 
-    # --- engine random mode: occasional, not continuous --------------
-    counts = {"play": 0, "stop": 0}
+    # --- legacy random config still produces one continuous loop ------
+    calls = []
     saved = (sound.play_ambient, sound.stop_sound, sound.set_volume,
-             sound.pick_variant, theme.apply_theme_color,
+             sound.pick_base, theme.apply_theme_color,
              wallpaper.apply_weather_wallpaper)
-    sound.play_ambient = lambda *a, **k: counts.__setitem__("play", counts["play"] + 1)
-    sound.stop_sound = lambda *a, **k: counts.__setitem__("stop", counts["stop"] + 1)
+    sound.play_ambient = lambda *a, **k: calls.append(k) or True
+    sound.stop_sound = lambda *a, **k: None
     sound.set_volume = lambda *a, **k: None
-    sound.pick_variant = lambda *a, **k: "sounds/rain.wav"
+    sound.pick_base = lambda *a, **k: "sounds/rain.wav"
     theme.apply_theme_color = lambda *a, **k: "t"
     wallpaper.apply_weather_wallpaper = lambda *a, **k: True
     try:
@@ -711,14 +770,22 @@ def test_sound_variants_and_modes():
         eng = engine.Engine()
         t0 = dt.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
         eng.step(cfg, None, now=t0)
-        check("random plays once at start", counts["play"] == 1)
+        check("ambient starts once", len(calls) == 1)
+        check("ambient always requests looping", calls[0]["loop"] is True)
         eng.step(cfg, None, now=t0)
-        check("random not replayed immediately", counts["play"] == 1)
-        eng.step(cfg, None, now=t0 + dt.timedelta(minutes=20))
-        check("random replays after the interval", counts["play"] == 2)
+        check("healthy loop is not restarted", len(calls) == 1)
+        old_current, old_health = sound.current_sound, sound.ambient_is_playing
+        try:
+            sound.current_sound = object()
+            sound.ambient_is_playing = lambda: False
+            eng.step(cfg, None, now=t0)
+            check("dropped ambient channel restarts", len(calls) == 2)
+        finally:
+            sound.current_sound = old_current
+            sound.ambient_is_playing = old_health
     finally:
         (sound.play_ambient, sound.stop_sound, sound.set_volume,
-         sound.pick_variant, theme.apply_theme_color,
+         sound.pick_base, theme.apply_theme_color,
          wallpaper.apply_weather_wallpaper) = saved
 
 
@@ -1331,14 +1398,37 @@ def test_gui_helper():
 
     fake = object.__new__(gui.App)
     names = ("v_theme", "v_wallpaper", "v_tint", "v_wpdynamic", "v_wpshift",
-             "v_wppatterns", "v_wpwarmth", "v_soundmode", "v_soundinterval",
-             "v_duck", "v_tick", "v_weatherrefresh", "v_smooth", "v_season",
+             "v_wppatterns", "v_wpwarmth", "v_duck", "v_tick",
+             "v_weatherrefresh", "v_smooth", "v_season",
              "v_multimon")
     for name in names:
         setattr(fake, name, FakeVar())
     gui.App._bind_auto_apply(fake)
     check("all formerly manual settings auto-apply",
           all(getattr(fake, name).traces for name in names))
+
+    feature_vars = [FakeVar() for _ in range(4)]
+    for var in feature_vars:
+        var.value = False
+        var.set = lambda value, target=var: setattr(target, "value", value)
+    gui._sync_feature_vars(True, feature_vars)
+    check("master on checks every feature", all(v.value is True for v in feature_vars))
+    gui._sync_feature_vars(False, feature_vars)
+    check("master off unchecks every feature", all(v.value is False for v in feature_vars))
+
+    check("week button accumulates from field date",
+          gui._shift_iso_date("2026-07-28", 7) == "2026-08-04")
+    check("invalid task date falls back to today",
+          gui._shift_iso_date("bad", 7, datetime.date(2026, 7, 21)) == "2026-07-28")
+    check("dashboard names weather and time",
+          gui._weather_summary("rain", "afternoon") ==
+          "Weather: Rain  ·  Time: Afternoon")
+
+    shell_source = inspect.getsource(gui.App._build_ui)
+    settings_source = inspect.getsource(gui.App._tab_settings)
+    check("main tab is named Settings", 'text="  Settings  "' in shell_source)
+    check("city helper text removed", "Pick your city for live weather" not in settings_source)
+    check("random playback controls removed", "Playback" not in settings_source)
 
 
 def test_cities():

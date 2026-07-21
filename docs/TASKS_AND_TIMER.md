@@ -1,8 +1,8 @@
 # Tasks & Timer Guide
 
-Both live in the **Focus & Tasks** window (click **⏱ Focus & Tasks** in the
-header). It runs independently — the timer keeps counting even if you close the
-window or the main tabs.
+Timers, reminders, and music live in the **Focus & Tasks** window (click
+**⏱ Focus & Tasks** in the header). It runs independently — a timer keeps
+counting even if you close the window or switch tabs.
 
 - [Pomodoro timer](#pomodoro-timer)
 - [Tasks & schedules](#tasks--schedules)
@@ -56,7 +56,7 @@ work-session count is shown under the timer.
 ## Tasks & schedules
 
 The **To-Do & Schedules** tab shows your tasks and a form to add new ones. Tasks
-are stored in `tasks.json` and run by the engine while it's started.
+are stored in `tasks.json` and run automatically while the master switch is on.
 
 The form uses plain language — no need to know the internal fields.
 
@@ -66,46 +66,35 @@ The form uses plain language — no need to know the internal fields.
 |---|---|---|
 | **Notify me** | Shows a system notification with the reminder's title | none |
 | **Play a chime** | Plays `chime.wav` | none |
-| **Change the weather** | Forces the manual weather look | a **Weather** dropdown (clear / cloud / rain / storm / night / auto) |
-| **Change accent colour** | Forces the manual accent colour | a **Colour** as `red,green,blue` (0–255), e.g. `255,150,60` |
-
-The extra field only appears when the action needs it, so there's no mystery
-"Value" box. *Change the weather / accent* writes the override into
-`config.json`, so it stays until you change it back (pick `auto`).
 
 ### "When" — every day, or a specific day
 
 - **When** → choose **Every day** or **Just once**, and set the time (`at HH:MM`,
   24-hour).
 - Choosing **Just once** reveals an **On** date (`YYYY-MM-DD`) with quick
-  **Today / Tomorrow / +1 week** buttons — so scheduling something for a future
-  day is one click.
+  **Today / Tomorrow / +1 week** buttons. **+1 week** adds seven days to the
+  date already in the field, so repeated clicks keep moving it forward.
 
 ### Adding a reminder
 
 1. Enter a **Title**.
-2. Pick what it should **Do** (fill the extra field if shown).
+2. Pick what it should **Do**.
 3. Set **When**: *Every day* + time, or *Just once* + date + time.
 4. Click **Add reminder** — it appears in the list, showing **When** and
-   **Does** in plain English (e.g. "Fri 01 Aug · 09:00", "Weather → rain").
+   **Does** in plain English (e.g. "Fri 01 Aug · 09:00", "Notification").
 
 Select a row and **Remove selected** to delete it. Bad times/dates are rejected
 with a clear hint.
 
 > Example — remind yourself about a trip next week: **Do** = Notify me,
-> **When** = Just once, click **+1 week**, set `08:00`. Or a daily warm sunrise:
-> **Do** = Change accent colour, `255,150,60`, **When** = Every day at `06:45`.
+> **When** = Just once, click **+1 week**, and set `08:00`.
 
 ### When tasks fire
 
-Tasks are evaluated on each engine step while the engine is **started** (or in
-`--background` mode). A daily task fires the first time the engine steps at or
-after its time, once per day. A one-off fires the first step at or after its
+Tasks are evaluated on each engine step while the app or `--background` mode is
+running and the master switch is on. A daily task fires the first engine step at
+or after its time, once per day. A one-off fires the first step at or after its
 datetime, then is marked done. If the app isn't running at the exact minute,
 the task still fires the next time it runs that day.
 
-A **Change the weather / accent** task recolours the desktop **immediately**
-when it fires (it drops the normal redraw interval and cross-fades to the new
-look). *Notify me* and *Play a chime* don't change any colours — if you want the
-background to change, pick one of the "Change …" actions. The engine must be
-**Started** for tasks to run at all.
+*Notify me* and *Play a chime* do not change theme or wallpaper settings.

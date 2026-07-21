@@ -10,7 +10,7 @@ Provides live weather from Open-Meteo, but also supports:
 import datetime
 
 # Conditions the rest of the app understands.
-CONDITIONS = ["clear", "cloud", "rain", "storm", "night"]
+CONDITIONS = ["clear", "cloud", "rain", "storm"]
 
 # Default location (overridden by config["location"]).
 LAT = -33.8688   # Sydney
@@ -159,7 +159,7 @@ def apply_overrides(live: dict, cfg: dict, now=None) -> dict:
     manual_time = (cfg.get("manual_time") or "auto").lower()
 
     # Condition drives theme/wallpaper/sound — overridable; data stays live.
-    if manual_weather != "auto":
+    if manual_weather in CONDITIONS:
         w["condition"] = manual_weather
         w["condition_source"] = "manual"
     else:

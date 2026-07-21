@@ -10,7 +10,6 @@ GUI; ``run_forever`` does the same for the headless ``--background`` mode.
 import os
 import sys
 import time
-import random
 import threading
 import subprocess
 import datetime
@@ -167,11 +166,10 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
         sound.stop_sound()
         status["note"] = "ambient paused — other audio playing"
     elif config.feature_enabled(cfg, "ambient_sound"):
-        loop = (cfg.get("sound_mode") or "loop").lower() != "random"
         base = sound.ambient_base(condition, is_night, eff.get("wind_speed") or 0)
         path = sound.pick_base(base)
         sound.play_ambient(condition, is_night, cfg.get("sound_volume", 25),
-                           path=path, loop=loop)
+                           path=path, loop=True)
         status["applied"].append(f"sound: {os.path.basename(path)}")
     else:
         sound.stop_sound()
@@ -272,7 +270,6 @@ class Engine:
         self._last_sound = None        # ambient path last played
         self._sound_on = False
         self._sound_base = None        # ambient base currently selected
-        self._next_sound_at = None     # random mode: when to play next
         self._last_wall_key = None     # (drifted_rgb, brightness_bucket) last drawn
         self._last_wall_at = None
         self._last_sun = None          # sun/moon fraction last drawn (for tracking)
@@ -457,7 +454,7 @@ class Engine:
                 self._wall_active = False
                 self._wall_off_handled = True
 
-        # --- sound: loop continuously, or play a random clip now and then --
+        # --- sound: continuous ambience, restarted if the audio device drops --
         if config.feature_enabled(cfg, "ambient_sound") and other_audio_playing(cfg):
             # Something else is playing — get out of the way, resume later.
             if self._sound_on:
@@ -469,36 +466,22 @@ class Engine:
             wind = eff.get("wind_speed") or 0
             base = sound.ambient_base(condition, is_night, wind)
             vol = cfg.get("sound_volume", 25)
-            mode = (cfg.get("sound_mode") or "loop").lower()
             base_changed = base != self._sound_base
-
-            if mode == "random":
-                # No continuous loop — stop any looping ambience first.
+            healthy = self._sound_on and (
+                sound.current_sound is None or sound.ambient_is_playing())
+            if base_changed or not healthy:
+                path = sound.pick_base(base)
+                started = sound.play_ambient(
+                    condition, is_night, vol, path=path, loop=True)
+                self._sound_on = started is not False
+                self._sound_base = base if self._sound_on else None
                 if self._sound_on:
-                    sound.stop_sound()
-                    self._sound_on = False
-                due = self._next_sound_at is None or now >= self._next_sound_at
-                if due or base_changed:
-                    path = sound.pick_base(base)
-                    sound.play_ambient(condition, is_night, vol, path=path, loop=False)
-                    self._sound_base = base
-                    self._last_sound = path
-                    iv = max(1, int(cfg.get("sound_interval_minutes", 5)))
-                    # Jitter the gap (±30%) so it never feels metronomic.
-                    gap = iv * 60 * (0.7 + 0.6 * random.random())
-                    self._next_sound_at = now + datetime.timedelta(seconds=gap)
-                    status["applied"].append(f"sound(once): {os.path.basename(path)}")
-            else:  # loop
-                self._next_sound_at = None
-                if base_changed or not self._sound_on:
-                    path = sound.pick_base(base)
-                    sound.play_ambient(condition, is_night, vol, path=path, loop=True)
-                    self._sound_base = base
-                    self._sound_on = True
                     self._last_sound = path
                     status["applied"].append(f"sound: {os.path.basename(path)}")
                 else:
-                    sound.set_volume(vol)
+                    status["note"] = "ambient unavailable — retrying"
+            else:
+                sound.set_volume(vol)
         elif self._sound_on:
             sound.stop_sound()
             self._sound_on = False
@@ -552,6 +535,10 @@ class EngineThread(threading.Thread):
             mono = time.monotonic()
             tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
 
+            if (self.engine._sound_on and sound.current_sound is not None
+                    and not sound.ambient_is_playing()):
+                self._last_full = None
+
             # Step often while a colour cross-fade is in progress so the
             # transition is smooth; otherwise on the normal cadence.
             full_iv = 0.5 if self.engine.transitioning else tick_iv
@@ -564,7 +551,8 @@ class EngineThread(threading.Thread):
                     print(f"[engine] step failed: {e}")
                 self._last_full = mono
 
-            sleep = 0.5 if self.engine.transitioning else tick_iv
+            sleep = 0.5 if self.engine.transitioning else (
+                min(tick_iv, 5) if self.engine._sound_on else tick_iv)
             self._wake.wait(timeout=max(0.05, sleep))
             self._wake.clear()
         sound.stop_sound()
@@ -582,6 +570,10 @@ def run_forever(config_path=config.CONFIG_FILE, tasks_path=tasks_mod.TASKS_FILE)
             mono = time.monotonic()
             tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
 
+            if (eng._sound_on and sound.current_sound is not None
+                    and not sound.ambient_is_playing()):
+                last_full = None
+
             full_iv = 0.5 if eng.transitioning else tick_iv
             if last_full is None or (mono - last_full) >= full_iv:
                 try:
@@ -590,7 +582,8 @@ def run_forever(config_path=config.CONFIG_FILE, tasks_path=tasks_mod.TASKS_FILE)
                     print(f"[engine] step failed: {e}")
                 last_full = mono
 
-            sleep = 0.5 if eng.transitioning else tick_iv
+            sleep = 0.5 if eng.transitioning else (
+                min(tick_iv, 5) if eng._sound_on else tick_iv)
             time.sleep(max(0.05, sleep))
     except KeyboardInterrupt:
         sound.stop_sound()

@@ -1,8 +1,8 @@
 # Configuration Reference
 
 All settings live in **`config.json`** in the project folder. The GUI writes it
-for you, but you can edit it by hand (close the app first, or press Save/Start
-afterward to reload). Missing keys fall back to the defaults below, and an
+for you, but you can edit it by hand. Main-window controls save automatically;
+the background engine reloads the file each cycle. Missing keys fall back to the defaults below, and an
 unreadable file is replaced with defaults rather than crashing.
 
 - [File locations](#file-locations)
@@ -50,7 +50,7 @@ Under `"features"`; each is ANDed with the master switch.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `weather_tint_strength` | int 0–100 | `40` | How strongly the weather colour shows vs. neutral. |
+| `weather_tint_strength` | int 0–100 | `72` | How strongly the weather colour shows vs. neutral. |
 | `wallpaper_dynamic` | bool | `true` | Slow, subtle colour drift. |
 | `wallpaper_shift_strength` | int 0–100 | `35` | Amplitude of that drift. |
 | `wallpaper_patterns` | bool | `true` | Weather patterns (rain/sun/clouds/stars). |
@@ -62,15 +62,13 @@ Under `"features"`; each is ANDed with the master switch.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `sound_volume` | int 0–100 | `25` | Ambient volume. |
-| `sound_mode` | `"loop"` \| `"random"` | `"loop"` | Continuous loop, or occasional one-shot clips. |
-| `sound_interval_minutes` | int | `5` | Average gap between plays in `random` mode. |
 
 See the [sound guide](SOUNDS.md) for file names and variants.
 
 ## Location
 
 Used for live weather (Open-Meteo). Pick your **City** from the dropdown in
-Appearance → Engine — it fills in the coordinates for you, and only that
+Settings → Engine — it fills in the coordinates for you, and only that
 city-level position is ever used.
 
 | Key | Type | Default | Meaning |
@@ -103,7 +101,7 @@ Example (London):
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `manual_weather` | `auto`/`clear`/`cloud`/`rain`/`storm`/`night` | `"auto"` | Force a condition, or `auto` for live data. |
+| `manual_weather` | `auto`/`clear`/`cloud`/`rain`/`storm` | `"auto"` | Force a weather condition, or `auto` for live data. |
 | `manual_time` | `auto` / `sunrise` / `morning` / `midday` / `afternoon` / `sunset` / `dusk` / `night` | `"auto"` | Force a time-of-day phase (tints the theme + wallpaper and sets brightness / Dark mode). `auto` follows the real sun. Legacy `day` = `midday`. |
 | `manual_theme_color` | `null` or `[r,g,b]` | `null` | Force an exact accent colour; `null` = derive from weather. |
 | `run_at_login` | bool | `false` | Reflects the run-at-login launcher state. |
@@ -139,14 +137,12 @@ Under `"pomodoro"`, minutes:
     "ambient_sound": true,
     "tasks": true
   },
-  "weather_tint_strength": 40,
+  "weather_tint_strength": 72,
   "wallpaper_dynamic": true,
   "wallpaper_shift_strength": 35,
   "wallpaper_patterns": true,
   "wallpaper_warmth": true,
   "sound_volume": 25,
-  "sound_mode": "random",
-  "sound_interval_minutes": 5,
   "location": { "lat": 51.5072, "lon": -0.1276, "name": "London" },
   "manual_weather": "auto",
   "manual_time": "auto",

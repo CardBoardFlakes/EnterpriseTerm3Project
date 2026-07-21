@@ -6,7 +6,7 @@ to bottom once — it takes five minutes.
 - [Installing & first launch](#installing--first-launch)
 - [The main window](#the-main-window)
   - [Dashboard tab](#dashboard-tab)
-  - [Appearance tab](#appearance-tab)
+  - [Settings tab](#settings-tab)
 - [Automatic apply](#automatic-apply)
 - [The Focus & Tasks window](#the-focus--tasks-window)
 - [Running automatically at login](#running-automatically-at-login)
@@ -40,7 +40,7 @@ plays, synthesises placeholder audio into `sounds/`.
 ## The main window
 
 The window has a **header** (title + **Focus & Tasks** button), two tabs
-(**Dashboard**, **Appearance**), and a status bar at the bottom.
+(**Dashboard**, **Settings**), and a status bar at the bottom.
 
 ### Dashboard tab
 
@@ -52,9 +52,12 @@ the **temperature**, and a live-data line: **feels-like, humidity, UV index
 location and data source (`live` / `fallback`). Press **↻ Refresh weather** to
 fetch again.
 
+The heading names both values explicitly, for example **Weather: Rain · Time:
+Afternoon**. Night and dusk are time-of-day phases, not weather conditions.
+
 > The live readings always reflect the *real* outside weather. Using a manual
 > weather/time override only changes the look (theme, wallpaper, sound) — the
-> card still shows the true temperature, humidity, UV, etc., marked `· manual`
+> card still shows the true temperature, humidity, UV, etc., marked `(manual)`
 > so you know a look is forced.
 
 The whole window also follows the time of day — light by day, dark at night,
@@ -63,18 +66,21 @@ with an accent tinted to the current sky — so the app matches your desktop.
 **Features** — the master switch plus per-feature toggles:
 
 - *Enable everything* — the master switch. Toggling it takes effect
-  **immediately**: turning it off silences ambient sound and stops all further
-  theme/wallpaper updates (it leaves the current wallpaper and accent as they
-  are — it doesn't restore your previous desktop). Turning it back on resumes.
+  **immediately** and checks or unchecks every feature below it. Turning it off
+  silences ambient sound and stops all further theme/wallpaper updates (it
+  leaves the current wallpaper and accent as they are). Turning it back on
+  enables and resumes every feature.
 - *Dynamic accent theme* — OS accent colour follows the weather.
 - *Weather wallpaper* — desktop background follows the weather.
 - *Ambient sound* — weather/time soundscape.
-- *Tasks & schedules* — run your scheduled tasks.
+
+Scheduled reminders have no separate main-window toggle. They run automatically
+while the master switch is on and are managed in **Focus & Tasks**.
 
 **Manual theme changer** — override what the app shows:
 
-- *Weather* — `auto` (use live data) or force `clear`, `cloud`, `rain`,
-  `storm`, `night`.
+- *Weather* — `auto` (use live data) or force `clear`, `cloud`, `rain`, or
+  `storm`.
 - *Time of day* — `auto`, or a specific phase: `sunrise`, `morning`, `midday`,
   `afternoon`, `sunset`, `dusk`, `night`. Each phase tints the theme and
   wallpaper with that time's light — warm and low at sunrise/sunset, bright and
@@ -87,18 +93,19 @@ with an accent tinted to the current sky — so the app matches your desktop.
 > so daytime phases may look similar there; the **wallpaper** shows the change
 > clearly.)
 
-### Appearance tab
+### Settings tab
 
 Looks and performance — set once and forget.
 
 - **Wallpaper look** — tint strength, subtle colour drift, weather patterns
   (rain/sun/clouds/stars), and the cold-weather warm tint. See the
   [Wallpaper guide](WALLPAPER.md).
-- **Sound** — volume, **loop vs. random** playback, interval, and a
+- **Sound** — ambient volume, optional pause while other audio plays, and a
   **Sound files…** button that lists the required filenames and opens the
-  folder. See the [Sound guide](SOUNDS.md).
-- **Engine** — how often the app steps (`Tick`) and how often it refetches
-  weather, plus **Run automatically at login**.
+  folder. Ambience loops continuously. See the [Sound guide](SOUNDS.md).
+- **Engine** — how often the app steps (`Tick`) and refetches weather, the city
+  used for live weather, multi-monitor wallpaper, and **Run automatically at
+  login**.
 
 ---
 
@@ -115,20 +122,22 @@ needed.
 
 ## The Focus & Tasks window
 
-Click **⏱ Focus & Tasks** in the header to open a separate window with two tabs.
+Click **⏱ Focus & Tasks** in the header to open a separate window with three tabs.
 It runs independently of the main window — the timer keeps ticking even if you
 close it. Full details in the [Tasks & timer guide](TASKS_AND_TIMER.md).
 
-- **Pomodoro Timer** — Start/Pause, Skip, Reset, and editable work / break /
-  long-break durations.
+- **Timers** — Pomodoro work/break cycles, a countdown timer, and a stopwatch
+  with laps.
 - **To-Do & Schedules** — a list of your tasks plus a form to add daily or
-  one-off tasks that notify you, play a chime, or switch the weather/theme.
+  one-off reminders that show a notification or play a chime.
+- **Music** — add local songs, choose a track, and use play/pause, stop,
+  previous/next, and separate volume controls.
 
 ---
 
 ## Running automatically at login
 
-Tick **Run automatically at login** (Appearance → Engine). This installs a
+Tick **Run automatically at login** (Settings → Engine). This installs a
 headless launcher that runs `main.py --background` when you log in:
 
 - **macOS** — a LaunchAgent at `~/Library/LaunchAgents/com.environmenttheme.controller.plist`.
@@ -162,5 +171,5 @@ run-at-login launcher uses.
 | Ambient sound files | `sounds/` (in the project folder) |
 
 To change your **location** for live weather, pick your **City** from the
-dropdown in Appearance → Engine. For a city that isn't listed, edit `location`
+dropdown in Settings → Engine. For a city that isn't listed, edit `location`
 in `config.json` — see the [Configuration reference](CONFIGURATION.md#location).

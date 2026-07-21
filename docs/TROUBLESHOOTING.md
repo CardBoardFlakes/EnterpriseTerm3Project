@@ -37,14 +37,14 @@ When run on macOS try checking the doc for the controller
 
 1. Install pygame: `pip install pygame`.
 2. Make sure **Ambient sound** is ticked (Dashboard) and **Ambient volume**
-   isn't at 0 (Appearance).
+   isn't at 0 (Settings).
 3. Check the console for `[sound] Audio unavailable …`. If mixer init fails,
    another app may hold the audio device, or the environment has no output.
 4. Confirm the files are real `.wav` in `sounds/` — see the
    [sound guide](SOUNDS.md).
 
-In **random** mode, sound is *supposed* to be silent most of the time — it plays
-a clip only every few minutes.
+Ambient sound should loop continuously. The engine retries mixer initialisation
+after temporary device errors and restarts a dropped loop within a few seconds.
 
 ---
 

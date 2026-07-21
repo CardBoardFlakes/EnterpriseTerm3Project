@@ -8,6 +8,7 @@ when it is not.
 """
 
 import os
+import hashlib
 import math
 import random
 import struct
@@ -36,27 +37,34 @@ SOUND_CONDITIONS = [
 # Defer pygame import so an audio init failure never crashes the app.
 _pygame_available = False
 _mixer = None
+_mixer_retry_at = 0.0
 current_sound = None
+_current_channel = None
 _current_path = None      # path of the sound currently playing (for dedup)
 _current_volume = 0.25
 _music_prev_vol = None     # music-stream volume saved while a chime ducks it
 
 
 def _ensure_mixer():
-    """Lazily initialise pygame.mixer on first use."""
-    global _pygame_available, _mixer
-    if _mixer is not None:
+    """Lazily initialise pygame.mixer, retrying after transient device errors."""
+    global _pygame_available, _mixer, _mixer_retry_at
+    if _mixer not in (None, False):
         return _pygame_available
+    now = time.monotonic()
+    if _mixer is False and now < _mixer_retry_at:
+        return False
     try:
         import pygame
-        pygame.mixer.init()
+        pygame.mixer.init(frequency=_RATE, buffer=1024)
         _mixer = pygame.mixer
         _pygame_available = True
+        _mixer_retry_at = 0.0
         print("[sound] pygame.mixer initialised successfully.")
     except Exception as e:
         print(f"[sound] Audio unavailable, sounds disabled: {e}")
         _pygame_available = False
-        _mixer = False  # sentinel so we don't retry every call
+        _mixer = False
+        _mixer_retry_at = now + 5.0
     return _pygame_available
 
 
@@ -167,15 +175,30 @@ def set_volume(volume_pct):
             pass
 
 
+def ambient_is_playing():
+    """Whether the ambient loop still owns an active mixer channel."""
+    if current_sound is None:
+        return False
+    try:
+        if _current_channel is not None:
+            return bool(_current_channel.get_busy())
+        return current_sound.get_num_channels() > 0
+    except Exception:
+        return False
+
+
 def play_sound(file: str, volume_pct=None, loop=True):
     """
     Play an ambient sound, replacing any currently playing one. *loop*=True
-    repeats it continuously; *loop*=False plays it once (used by the
-    occasional/random mode).
+    repeats it continuously; *loop*=False plays it once.
     """
-    global current_sound, _current_path
+    global current_sound, _current_channel, _current_path
+    try:
+        ensure_placeholder_sounds()
+    except Exception as e:
+        print(f"[sound] Could not prepare built-in sounds: {e}")
     if not _ensure_mixer():
-        return
+        return False
 
     if volume_pct is not None:
         set_volume(volume_pct)
@@ -183,20 +206,20 @@ def play_sound(file: str, volume_pct=None, loop=True):
     if not os.path.isfile(file):
         # Try to synthesise a placeholder so the feature still works.
         try:
-            ensure_placeholder_sounds()
+            ensure_placeholder_sounds(os.path.dirname(file))
         except Exception as e:
             print(f"[sound] Could not create placeholder for {file!r}: {e}")
         if not os.path.isfile(file):
             print(f"[sound] Sound file not found, skipping: {file!r}")
-            return
+            return False
 
     # For a looping sound, don't restart the same file if it's already playing.
     # (pygame's Sound objects forbid custom attributes, so we track the path
     # ourselves.) One-shot plays always fire — that's the point.
     if current_sound is not None:
         try:
-            if loop and current_sound.get_num_channels() > 0 and _current_path == file:
-                return
+            if loop and ambient_is_playing() and _current_path == file:
+                return True
         except Exception:
             pass
         try:
@@ -207,12 +230,18 @@ def play_sound(file: str, volume_pct=None, loop=True):
     try:
         snd = _mixer.Sound(file)
         snd.set_volume(_current_volume)
-        snd.play(loops=-1 if loop else 0)
+        channel = snd.play(loops=-1 if loop else 0)
+        if channel is None:
+            print(f"[sound] No mixer channel available for {file!r}")
+            return False
         current_sound = snd
+        _current_channel = channel
         _current_path = file
         print(f"[sound] Playing: {file} (loop={loop}, vol={_current_volume:.2f})")
+        return True
     except Exception as e:
         print(f"[sound] Failed to play {file!r}: {e}")
+        return False
 
 
 def play_ambient(condition: str, is_night: bool, volume_pct=None,
@@ -221,8 +250,8 @@ def play_ambient(condition: str, is_night: bool, volume_pct=None,
     Play the ambient sound for the given weather/time. *path* lets the caller
     supply an already-chosen variant; otherwise the canonical file is used.
     """
-    play_sound(path or select_ambient(condition, is_night),
-               volume_pct=volume_pct, loop=loop)
+    return play_sound(path or select_ambient(condition, is_night),
+                      volume_pct=volume_pct, loop=loop)
 
 
 def _duck_for_chime():
@@ -288,14 +317,15 @@ def play_chime():
 
 def stop_sound():
     """Stop whichever ambient sound is currently playing, if any."""
-    global current_sound, _current_path
+    global current_sound, _current_channel, _current_path
     if current_sound is not None:
         try:
             current_sound.stop()
         except Exception as e:
             print(f"[sound] Error stopping sound: {e}")
-        current_sound = None
-        _current_path = None
+    current_sound = None
+    _current_channel = None
+    _current_path = None
 
 
 # ---------------------------------------------------------
@@ -303,6 +333,38 @@ def stop_sound():
 # ---------------------------------------------------------
 
 _RATE = 22050
+
+_GENERATED_SOUND_HASHES = {
+    "clearday": {
+        "a4ff4603cc28054a74de17056c75a409ed8dd4eb4a13c96e9f81b2241958fbb7",
+        "bfed5cde79d2706cf37da0b64cc0423bfb76c6ddbf0fa0e4d445905a651addd8",
+    },
+    "clearnight": {
+        "7cf6dada57dbad55da60efb012e7fb45b4924390e2ac717aabe98a239945efb0",
+        "7ac6590c882d53b342cfc3c3b4cad229856010535f2467996513607a2602dda9",
+    },
+    "cloud": {
+        "d214f8218ebf83813acc841b8ef147fd5686504f90d439daa424985769f5bd79",
+        "4000669f12ffebabfd236f867fce53a59e0e7bc5a430a5f77141c782ae3bc36a",
+    },
+    "rain": {
+        "3cf84b8667b2fd285b02de6bc58f015b052882f05f01e15c512c54fac0f944fb",
+        "abed2495fa053a3c67453523bf66d53672255c872e04bace941779085d4acaab",
+    },
+    "storm": {
+        "6b4c3e9c01d51068c59621daadfc67529005f9a458613e5350ef5afd75208137",
+        "789efc1353994805d42785139d12d08b5792ca96acfc1a67ea92d066cebac0a1",
+    },
+}
+
+_AMBIENT_SECONDS = {
+    "rain": 12.0,
+    "cloud": 14.0,
+    "storm": 18.0,
+    "clearday": 16.0,
+    "clearnight": 16.0,
+    "chime": 0.8,
+}
 
 
 def _write_wav(path, samples):
@@ -317,12 +379,12 @@ def _write_wav(path, samples):
         w.writeframes(frames)
 
 
-def _noise(n, lp=0.0):
+def _noise(n, lp=0.0, rng=None):
     """White noise, optionally low-pass filtered (lp 0..1, higher=darker)."""
     out = []
     prev = 0.0
     for _ in range(n):
-        x = random.uniform(-1, 1)
+        x = (rng or random).uniform(-1, 1)
         if lp:
             prev = prev * lp + x * (1 - lp)
             x = prev
@@ -330,31 +392,85 @@ def _noise(n, lp=0.0):
     return out
 
 
-def _synth(name, seconds=2.0):
+def _loop_noise(n, lp, rng):
+    """Filtered repeating noise whose filter state settles before capture."""
+    source = [rng.uniform(-1, 1) for _ in range(n)]
+    out = []
+    prev = 0.0
+    for i in range(n * 3):
+        prev = prev * lp + source[i % n] * (1.0 - lp)
+        if i >= n * 2:
+            out.append(prev)
+    return out
+
+
+def _add_call(samples, start, duration, low_hz, high_hz, amplitude):
+    """Add one soft, tapered bird/cricket-like call."""
+    first = max(0, int(start * _RATE))
+    count = min(int(duration * _RATE), len(samples) - first)
+    phase = 0.0
+    for i in range(count):
+        progress = i / max(1, count - 1)
+        freq = low_hz + (high_hz - low_hz) * progress
+        phase += 2 * math.pi * freq / _RATE
+        envelope = math.sin(math.pi * progress) ** 2
+        samples[first + i] += math.sin(phase) * amplitude * envelope
+
+
+def _finish_loop(samples):
+    """Fade loop edges to silence so pygame repetition cannot click."""
+    fade = min(int(_RATE * 0.1), len(samples) // 4)
+    for i in range(fade):
+        gain = math.sin((math.pi / 2) * i / max(1, fade - 1)) ** 2
+        samples[i] *= gain
+        samples[-i - 1] *= gain
+    return samples
+
+
+def _synth(name, seconds=None):
+    seconds = float(seconds or _AMBIENT_SECONDS.get(name, 12.0))
     n = int(_RATE * seconds)
+    rng = random.Random(f"flow-relaxing-v2:{name}")
     if name == "rain":
-        return [s * 0.5 for s in _noise(n, lp=0.6)]
+        soft = _loop_noise(n, 0.72, rng)
+        deep = _loop_noise(n, 0.96, rng)
+        return _finish_loop([(soft[i] * 0.2 + deep[i] * 0.16)
+                            * (0.88 + 0.12 * math.sin(2 * math.pi * i / n))
+                            for i in range(n)])
     if name == "cloud":
-        base = _noise(n, lp=0.92)
-        return [base[i] * (0.35 + 0.25 * math.sin(2 * math.pi * i / n)) for i in range(n)]
+        breeze = _loop_noise(n, 0.985, rng)
+        air = _loop_noise(n, 0.94, rng)
+        return _finish_loop([(breeze[i] * 0.75 + air[i] * 0.09)
+                            * (0.7 + 0.3 * math.sin(2 * math.pi * i / n) ** 2)
+                            for i in range(n)])
     if name == "storm":
-        rumble = _noise(n, lp=0.97)
-        return [rumble[i] * (1.0 - i / n) * 0.8 for i in range(n)]
+        rain = _loop_noise(n, 0.8, rng)
+        rumble = _loop_noise(n, 0.995, rng)
+        out = [rain[i] * 0.1 + rumble[i] * 0.55 for i in range(n)]
+        for start, duration in ((4.0, 3.0), (11.5, 4.0)):
+            first = int(start * _RATE)
+            count = min(int(duration * _RATE), n - first)
+            for i in range(count):
+                p = i / max(1, count - 1)
+                env = math.sin(math.pi * p) ** 2
+                t = i / _RATE
+                out[first + i] += math.sin(2 * math.pi * 58 * t) * 0.09 * env
+        return _finish_loop(out)
     if name == "clearday":
-        out = []
-        for i in range(n):
-            t = i / _RATE
-            chirp = math.sin(2 * math.pi * (1800 + 400 * math.sin(t * 30)) * t)
-            env = 0.3 * (1 if (i // (_RATE // 4)) % 2 == 0 else 0)
-            out.append(chirp * env)
-        return out
+        breeze = _loop_noise(n, 0.98, rng)
+        out = [s * 0.3 for s in breeze]
+        for start, low, high in ((2.6, 1450, 2050), (7.8, 1750, 2250), (12.4, 1350, 1900)):
+            _add_call(out, start, 0.32, low, high, 0.08)
+            _add_call(out, start + 0.42, 0.24, high, low * 1.05, 0.06)
+        return _finish_loop(out)
     if name == "clearnight":
-        out = []
-        for i in range(n):
-            t = i / _RATE
-            pulse = 1 if (int(t * 12) % 2 == 0) else 0
-            out.append(math.sin(2 * math.pi * 4500 * t) * 0.18 * pulse)
-        return out
+        night_air = _loop_noise(n, 0.985, rng)
+        out = [s * 0.28 for s in night_air]
+        for group, freq in ((2.0, 2350), (7.2, 2550), (12.1, 2250)):
+            for pulse in range(5):
+                _add_call(out, group + pulse * 0.13, 0.075,
+                          freq, freq * 1.04, 0.075)
+        return _finish_loop(out)
     if name == "chime":
         out = []
         for i in range(int(_RATE * 0.8)):
@@ -363,16 +479,24 @@ def _synth(name, seconds=2.0):
             out.append((math.sin(2 * math.pi * 880 * t)
                         + 0.5 * math.sin(2 * math.pi * 1320 * t)) * 0.3 * env)
         return out
-    return _noise(n, lp=0.9)
+    return _loop_noise(n, 0.9, rng)
 
 
 def ensure_placeholder_sounds(directory=SOUNDS_DIR):
-    """Create any missing ambient sound files. Returns the list created."""
-    random.seed(42)  # deterministic placeholders
+    """Create relaxing built-ins and migrate only known legacy generated WAVs."""
     created = []
     for name in ["rain", "cloud", "storm", "clearday", "clearnight", "chime"]:
         path = os.path.join(directory, f"{name}.wav")
-        if not os.path.isfile(path):
+        replace = not os.path.isfile(path)
+        if not replace:
+            try:
+                with open(path, "rb") as f:
+                    generated_hashes = _GENERATED_SOUND_HASHES.get(name, set())
+                    replace = bool(
+                        hashlib.sha256(f.read()).hexdigest() in generated_hashes)
+            except OSError:
+                replace = False
+        if replace:
             _write_wav(path, _synth(name))
             created.append(path)
     return created

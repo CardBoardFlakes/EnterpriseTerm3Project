@@ -43,15 +43,15 @@ See the full walkthrough in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 | **Accessibility** | A **high-contrast** mode forces bold, maximum-contrast colours and a black/white/yellow window. |
 | **Dark/Light lock** | Force the device (and app) to Dark or Light, or let it follow the time of day. |
 | **Weather wallpaper** | A sky-gradient background per condition, with weather patterns (rain, sun, clouds, stars) and a cosy warm tint when it's cold. |
-| **Ambient sound** | Weather/time soundscapes with your own files + random variants; play looped or occasionally. Windy skies use the cloudy ambience. |
-| **Music player** | Play your own downloaded songs (mp3/ogg/wav) in the background, with a playlist, auto-advance and its own volume. |
+| **Ambient sound** | Relaxing weather/time soundscapes that loop continuously. Add your own files or variants; windy skies use the cloudy ambience. |
+| **Music player** | Play your own downloaded songs (mp3/ogg/wav/flac/m4a) in the background, with playlist controls and a separate volume. |
 | **Auto-duck** | Optionally pause the ambient sound while other audio plays (your music player, or best-effort Spotify/Apple Music on macOS / any app on Windows). |
 | **Timers** | A Timers tab with three modes: **Pomodoro** (work/break cycles), a plain **countdown Timer**, and a **Stopwatch** with laps. |
-| **Tasks & schedules** | Daily or one-off tasks that notify, chime, or switch the weather/theme. |
+| **Tasks & schedules** | Daily or one-off reminders that show a notification or play a chime. |
 | **Live weather panel** | Temperature, feels-like, humidity, UV index (with risk band), wind + gusts, rain chance and pressure. |
 | **Manual overrides** | Force a weather condition, time of day, or exact accent colour — the live data keeps showing the *real* outside conditions. |
 | **Time-of-day UI** | The app window itself follows the day: a light theme by day, dark at night, with a phase-tinted accent — matching the wallpaper/OS. |
-| **Location privacy** | Coordinates are rounded to a coarse, city-level area before use — your exact position never leaves the machine. |
+| **Location privacy** | No automatic location detection; only the coordinates for your selected city are sent for weather data. |
 | **Run at login** | Optional auto-start (macOS LaunchAgent / Windows Run key). |
 
 ---
@@ -62,9 +62,9 @@ Detailed, task-focused guides live in **[`docs/`](docs/)**:
 
 | Guide | What's inside |
 |---|---|
-| [User guide](docs/USER_GUIDE.md) | First launch, the Dashboard & Appearance tabs, the Focus & Tasks window, and running at login. |
+| [User guide](docs/USER_GUIDE.md) | First launch, the Dashboard & Settings tabs, the Focus & Tasks window, and running at login. |
 | [Wallpaper guide](docs/WALLPAPER.md) | The static weather wallpaper: weather patterns, sun/moon movement, and the cold-weather warm tint. |
-| [Sound guide](docs/SOUNDS.md) | File names, adding your own clips, variants, loop vs. random playback. |
+| [Sound guide](docs/SOUNDS.md) | Built-in ambience, file names, adding your own clips, and variants. |
 | [Tasks & timer guide](docs/TASKS_AND_TIMER.md) | Pomodoro usage and creating daily / one-off scheduled tasks. |
 | [Configuration reference](docs/CONFIGURATION.md) | Every `config.json` key, defaults, and where files are stored. |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | GUI, audio, wallpaper, accent-colour, and weather issues. |
@@ -85,19 +85,19 @@ python tests.py             # run the test suite
 ## Location & privacy
 
 The app **does not detect your location** — no GPS, no IP lookup, no OS query,
-no "auto-detect". It uses fixed coordinates:
+no "auto-detect". It uses the fixed coordinates for your selected city:
 
 1. A hardcoded default in `config.py` — `{"lat": -33.8688, "lon": 151.2093,
    "name": "Sydney"}`.
-2. Overridden only by the `location` block in **`config.json`** if you edit it
-   by hand (there's no GUI field for it yet).
-3. Those `lat`/`lon` are placed directly in the Open-Meteo request URL
+2. The **City** dropdown in Settings → Engine replaces that default with a
+   city from the built-in list and saves it to `config.json`.
+3. For an unlisted city, you can edit the `location` block in `config.json`.
+4. Those `lat`/`lon` are placed directly in the Open-Meteo request URL
    (`…?latitude=<lat>&longitude=<lon>&…&timezone=auto`). `timezone=auto` just
    returns times in that coordinate's timezone — it does not locate you.
 
-So until you edit `config.json`, it fetches weather for **Sydney**, wherever the
-computer actually is. To use your own area, set `location.lat` / `location.lon`
-(find them in any maps app) — see the
+So until you pick another city, it fetches weather for **Sydney**, wherever the
+computer actually is. For custom coordinates, see the
 [Configuration reference](docs/CONFIGURATION.md#location).
 
 **What leaves the machine:** only the configured `lat`/`lon` → Open-Meteo, over
@@ -114,7 +114,7 @@ privacy, use a nearby town's coordinates rather than your exact address.
 | File | Responsibility |
 |---|---|
 | `main.py` | Entry point (GUI / `--once` / `--background`) |
-| `gui.py` | Tkinter UI: Dashboard + Appearance tabs, separate Focus & Tasks window |
+| `gui.py` | Tkinter UI: Dashboard + Settings tabs, separate Focus & Tasks window |
 | `engine.py` | Stateful orchestration: cheap steps, work only on change |
 | `config.py` | Defaults, load/save, feature gating |
 | `weather.py` | Live weather (Open-Meteo) + manual override + offline fallback |
@@ -150,7 +150,7 @@ pip install ruff
 python3 -m ruff check .      # 0 issues
 ```
 
-A headless test suite covering config,
+A 388-check headless test suite covering config,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
 / warmth, sound

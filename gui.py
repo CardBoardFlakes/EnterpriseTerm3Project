@@ -5,8 +5,7 @@ Layout:
   * Main window
       - Dashboard   — live weather + temperature, feature toggles, and the
                       manual theme changer (weather / time / colour), together.
-      - Appearance  — wallpaper look (sliders, patterns, animation, backend),
-                      sound volume, engine cadence, run-at-login.
+      - Settings    — wallpaper look, sound, engine cadence, run-at-login.
   * Separate "Focus & Tasks" window (opened from the header)
       - Pomodoro timer
       - To-do & schedules
@@ -53,9 +52,6 @@ def apply_values_to_config(cfg: dict, values: dict) -> dict:
     }
     cfg["weather_tint_strength"] = int(round(values["tint"]))
     cfg["sound_volume"] = int(round(values["volume"]))
-    smode = str(values.get("sound_mode", "loop")).lower()
-    cfg["sound_mode"] = smode if smode in config.SOUND_MODES else "loop"
-    cfg["sound_interval_minutes"] = max(1, int(values.get("sound_interval_minutes", 5)))
     cfg["music_volume"] = max(0, min(100, int(values.get("music_volume", 60))))
     cfg["pause_when_other_audio"] = bool(values.get("pause_when_other_audio", False))
     cfg["tick_interval_seconds"] = max(5, int(values["tick_interval"]))
@@ -71,7 +67,9 @@ def apply_values_to_config(cfg: dict, values: dict) -> dict:
         "long_break_min": max(1, int(values["p_long"])),
         "cycles_before_long": max(1, int(values["p_cycles"])),
     }
-    cfg["manual_weather"] = values["manual_weather"]
+    manual_weather = str(values["manual_weather"]).lower()
+    cfg["manual_weather"] = (
+        manual_weather if manual_weather in config.WEATHER_CHOICES else "auto")
     cfg["manual_time"] = values["manual_time"]
 
     color = (values.get("manual_theme_color") or "").strip()
@@ -230,6 +228,30 @@ def _fmt_details(d):
     return "   ·   ".join(bits) if bits else "live data unavailable"
 
 
+def _weather_summary(condition, phase, manual=False):
+    """Unambiguous dashboard label for weather condition and time phase."""
+    weather_text = (condition or "unknown").capitalize()
+    phase_text = (phase or "unknown").capitalize()
+    suffix = " (manual)" if manual else ""
+    return f"Weather: {weather_text}{suffix}  ·  Time: {phase_text}"
+
+
+def _shift_iso_date(value, days, today=None):
+    """Shift an ISO date, falling back to today when the field is invalid."""
+    today = today or datetime.date.today()
+    try:
+        base = datetime.date.fromisoformat(value)
+    except (TypeError, ValueError):
+        base = today
+    return (base + datetime.timedelta(days=days)).isoformat()
+
+
+def _sync_feature_vars(enabled, variables):
+    """Set each per-feature BooleanVar to the master switch state."""
+    for variable in variables:
+        variable.set(bool(enabled))
+
+
 def _card(parent, title=None):
     """A white padded panel; returns the inner content frame."""
     outer = ttk.Frame(parent, style="Card.TFrame", padding=1)
@@ -292,8 +314,6 @@ class App:
         self.v_volume = tk.DoubleVar(value=float(c.get("sound_volume", 25)))
         self._vol_save_job = None            # debounced save for the volume slider
         self.v_volume.trace_add("write", self._on_ambient_volume)
-        self.v_soundmode = tk.StringVar(value=c.get("sound_mode", "loop"))
-        self.v_soundinterval = tk.IntVar(value=int(c.get("sound_interval_minutes", 5)))
         self.v_musicvol = tk.IntVar(value=int(c.get("music_volume", 60)))
         self.v_musicvol.trace_add("write", self._on_music_volume)
         self.v_duck = tk.BooleanVar(value=c.get("pause_when_other_audio", False))
@@ -463,9 +483,20 @@ class App:
         vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         inner = ttk.Frame(canvas)
         iid = canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=vsb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
+        scrollbar_visible = [False]
+
+        def set_scrollbar(first, last):
+            vsb.set(first, last)
+            if float(first) <= 0.0 and float(last) >= 1.0:
+                if scrollbar_visible[0]:
+                    vsb.place_forget()
+                    scrollbar_visible[0] = False
+            elif not scrollbar_visible[0]:
+                vsb.place(relx=1.0, rely=0.0, relheight=1.0, anchor="ne")
+                scrollbar_visible[0] = True
+
+        canvas.configure(yscrollcommand=set_scrollbar)
+        canvas.pack(fill="both", expand=True)
         self._scroll_canvases.append(canvas)
 
         inner.bind("<Configure>",
@@ -503,6 +534,9 @@ class App:
         for c in self._scroll_canvases:
             try:
                 if c.winfo_ismapped():
+                    first, last = c.yview()
+                    if (step < 0 and first <= 0.0) or (step > 0 and last >= 1.0):
+                        return "break"
                     c.yview_scroll(step, "units")
                     return "break"
             except tk.TclError:
@@ -559,7 +593,7 @@ class App:
         nb = ttk.Notebook(self.root)
         nb.pack(fill="both", expand=True, padx=12, pady=(4, 6))
         nb.add(self._tab_dashboard(nb), text="  Dashboard  ")
-        nb.add(self._tab_appearance(nb), text="  Appearance  ")
+        nb.add(self._tab_settings(nb), text="  Settings  ")
 
         bar = ttk.Frame(self.root, padding=(12, 4))
         bar.pack(fill="x", side="bottom")
@@ -643,8 +677,8 @@ class App:
         self.v_time.trace_add("write", lambda *_: self._on_override_change())
         return page
 
-    # --- Appearance tab ------------------------------------------------
-    def _tab_appearance(self, parent):
+    # --- Settings tab --------------------------------------------------
+    def _tab_settings(self, parent):
         page = ttk.Frame(parent, padding=(10, 8))
         body = self._make_scroll(page)
 
@@ -662,23 +696,15 @@ class App:
 
         sc = _card(body, "Sound")
         self._slider(sc, "Ambient volume", self.v_volume)
-        mr = ttk.Frame(sc, style="Card.TFrame"); mr.pack(fill="x", pady=4)
-        ttk.Label(mr, text="Playback", style="Card.TLabel", width=12).pack(side="left")
-        ttk.Combobox(mr, textvariable=self.v_soundmode, state="readonly", width=8,
-                     values=config.SOUND_MODES).pack(side="left")
-        ttk.Label(mr, text="Every", style="Card.TLabel").pack(side="left", padx=(12, 2))
-        ttk.Spinbox(mr, from_=1, to=120, textvariable=self.v_soundinterval,
-                    width=5).pack(side="left")
-        ttk.Label(mr, text="min (random mode)", style="Muted.TLabel").pack(side="left", padx=4)
         ttk.Checkbutton(sc, text="Pause ambient when other audio is playing",
                         style="Card.TCheckbutton", variable=self.v_duck,
                         command=self._on_override_change).pack(anchor="w", pady=(6, 0))
         ttk.Button(sc, text="🎵  Sound files… (names + open folder)", style="Ghost.TButton",
                    command=self.on_manage_sounds).pack(anchor="w", pady=(8, 0))
         ttk.Label(sc, style="Muted.TLabel", wraplength=460,
-                  text="loop = plays continuously. random = one clip now and then. "
-                       "Add several clips per weather for variety, e.g. "
-                       "rain.wav, rain2.wav — one is picked at random.").pack(anchor="w", pady=(6, 0))
+                  text="Ambience loops continuously. Add several clips per weather "
+                       "for variety, e.g. rain.wav and rain2.wav — a different one "
+                       "can be chosen when the weather changes.").pack(anchor="w", pady=(6, 0))
 
         # Seasons & transitions ------------------------------------------
         st = _card(body, "Seasons & transitions")
@@ -725,10 +751,6 @@ class App:
                                values=config.city_choices())
         city_cb.pack(side="left")
         city_cb.bind("<<ComboboxSelected>>", lambda e: self._on_city_change())
-        ttk.Label(ec, style="Muted.TLabel", wraplength=460,
-                  text="Pick your city for live weather — no need to edit "
-                       "coordinates. Only this city-level location is ever "
-                       "used.").pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(ec, text="Set wallpaper on all monitors", style="Card.TCheckbutton",
                         variable=self.v_multimon,
                         command=self._on_override_change).pack(anchor="w", pady=(8, 0))
@@ -790,8 +812,8 @@ class App:
         self.v_wicon.set(_weather_icon(cond, is_night))
         self.v_wtemp.set(_fmt_temp(d.get("temperature")))
         tod = d.get("phase") or ("night" if is_night else "day")
-        manual = "  ·  manual" if d.get("condition_source") == "manual" else ""
-        self.v_wcond.set(f"{cond.capitalize()}  ·  {tod}{manual}")
+        self.v_wcond.set(_weather_summary(
+            cond, tod, manual=d.get("condition_source") == "manual"))
         loc = self.cfg.get("location", {}).get("name", "")
         src = d.get("source")
         self.v_wsub.set(f"{loc}   ({src})" if src else loc)
@@ -833,8 +855,7 @@ class App:
         variables = (
             self.v_theme, self.v_wallpaper, self.v_tint, self.v_wpdynamic,
             self.v_wpshift, self.v_wppatterns, self.v_wpwarmth,
-            self.v_soundmode, self.v_soundinterval, self.v_duck,
-            self.v_tick, self.v_weatherrefresh, self.v_smooth, self.v_season,
+            self.v_duck, self.v_tick, self.v_weatherrefresh, self.v_smooth, self.v_season,
             self.v_multimon,
         )
         for variable in variables:
@@ -1231,11 +1252,16 @@ class App:
         self.date_row = ttk.Frame(form, style="Card.TFrame")
         ttk.Label(self.date_row, text="On", style="Card.TLabel", width=8).pack(side="left")
         ttk.Entry(self.date_row, textvariable=self.t_date, width=12).pack(side="left")
-        for txt, days in [("Today", 0), ("Tomorrow", 1), ("+1 week", 7)]:
-            ttk.Button(self.date_row, text=txt, style="Ghost.TButton",
-                       command=lambda d=days: self.t_date.set(
-                           (datetime.date.today() + datetime.timedelta(days=d)).isoformat())
-                       ).pack(side="left", padx=3)
+        ttk.Button(self.date_row, text="Today", style="Ghost.TButton",
+                   command=lambda: self.t_date.set(datetime.date.today().isoformat())
+                   ).pack(side="left", padx=3)
+        ttk.Button(self.date_row, text="Tomorrow", style="Ghost.TButton",
+                   command=lambda: self.t_date.set(
+                       (datetime.date.today() + datetime.timedelta(days=1)).isoformat())
+                   ).pack(side="left", padx=3)
+        ttk.Button(self.date_row, text="+1 week", style="Ghost.TButton",
+                   command=lambda: self.t_date.set(_shift_iso_date(self.t_date.get(), 7))
+                   ).pack(side="left", padx=3)
 
         self.t_action.trace_add("write", lambda *_: self._on_task_action_change())
         self.t_repeat.trace_add("write", lambda *_: self._on_task_repeat_change())
@@ -1416,8 +1442,6 @@ class App:
             "tasks": self.v_tasks.get(),
             "tint": self.v_tint.get(),
             "volume": self.v_volume.get(),
-            "sound_mode": self.v_soundmode.get(),
-            "sound_interval_minutes": self.v_soundinterval.get(),
             "music_volume": self.v_musicvol.get(),
             "pause_when_other_audio": self.v_duck.get(),
             "tick_interval": self.v_tick.get(),
@@ -1453,6 +1477,8 @@ class App:
         further updates; it leaves the current wallpaper/accent in place.
         """
         on = self.v_enabled.get()
+        _sync_feature_vars(
+            on, (self.v_theme, self.v_wallpaper, self.v_sound, self.v_tasks))
         if on:
             # Enabling applies immediately (bypasses the redraw guard).
             self._apply_live("Enabled")
