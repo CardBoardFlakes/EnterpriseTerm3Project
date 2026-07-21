@@ -8,6 +8,7 @@ and the background engine so the two never drift apart.
 import copy
 import json
 import os
+import tempfile
 
 # Absolute path next to this module, so the app reads/writes the SAME config
 # no matter which directory it's launched from. (A relative "config.json" would
@@ -15,9 +16,9 @@ import os
 # started from the parent folder — the desktop then never seemed to change.)
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
-# Master defaults. Every setting the app understands lives here.
+# Application defaults. Every setting the app understands lives here.
 DEFAULTS = {
-    # Master switch — when False the engine does nothing at all.
+    # Select-all UI state. Features remain independently selectable when false.
     "enabled": True,
 
     # Per-feature switches.
@@ -44,10 +45,6 @@ DEFAULTS = {
 
     # Sound.
     "sound_volume": 25,           # percent 0-100 — "subtle" by default
-    # Playback style: "loop" plays the ambience continuously; "random" plays a
-    # single (randomly chosen) clip now and then, roughly every N minutes.
-    "sound_mode": "loop",         # loop | random
-    "sound_interval_minutes": 5,  # random mode: average gap between plays
     "music_volume": 60,           # your own music (separate from ambience)
     # Pause the app's ambient sound while other audio is playing (our own music
     # player, or — best effort — another app like Spotify / Apple Music).
@@ -58,7 +55,7 @@ DEFAULTS = {
     "location": {"lat": -33.8688, "lon": 151.2093, "name": "Sydney"},
 
     # Manual overrides. "auto" / None means "use live data".
-    "manual_weather": "auto",     # auto|clear|cloud|rain|storm|night
+    "manual_weather": "auto",     # auto|clear|cloud|rain|storm
     "manual_time":    "auto",     # auto | sunrise|morning|midday|afternoon|sunset|dusk|night
     "manual_theme_color": None,   # null or [r, g, b]
 
@@ -107,10 +104,9 @@ DEFAULTS = {
 }
 
 # Allowed values for the override dropdowns — shared with the GUI.
-WEATHER_CHOICES = ["auto", "clear", "cloud", "rain", "storm", "night"]
+WEATHER_CHOICES = ["auto", "clear", "cloud", "rain", "storm"]
 TIME_CHOICES = ["auto", "sunrise", "morning", "midday", "afternoon", "sunset", "dusk", "night"]
 FEATURE_KEYS = ["dynamic_theme", "wallpaper", "ambient_sound", "tasks"]
-SOUND_MODES = ["loop", "random"]
 PROFILE_CHOICES = ["none", "focus", "creativity", "relax"]
 ACCESSIBILITY_CHOICES = ["none", "high_contrast"]
 HEMISPHERE_CHOICES = ["auto", "north", "south"]
@@ -223,7 +219,8 @@ def default_config() -> dict:
 # Settings that used to exist but have since been removed. They're stripped
 # from any loaded config so old files get cleaned up on the next save.
 RETIRED_KEYS = ("location_precision", "wallpaper_backend", "wallpaper_animated",
-                "wallpaper_animated_fps", "wallpaper_load_ceiling")
+                "wallpaper_animated_fps", "wallpaper_load_ceiling", "sound_mode",
+                "sound_interval_minutes")
 
 
 def load_config(path: str = CONFIG_FILE) -> dict:
@@ -237,7 +234,10 @@ def load_config(path: str = CONFIG_FILE) -> dict:
             raise ValueError("config root is not an object")
         for k in RETIRED_KEYS:
             data.pop(k, None)
-        return _deep_merge(DEFAULTS, data)
+        merged = _deep_merge(DEFAULTS, data)
+        if str(merged.get("manual_weather", "auto")).lower() not in WEATHER_CHOICES:
+            merged["manual_weather"] = "auto"
+        return merged
     except (json.JSONDecodeError, OSError, ValueError) as e:
         print(f"[config] Could not load {path}, using defaults: {e}")
         return default_config()
@@ -245,17 +245,28 @@ def load_config(path: str = CONFIG_FILE) -> dict:
 
 def save_config(cfg: dict, path: str = CONFIG_FILE) -> bool:
     """Persist *cfg* to *path*. Returns True on success."""
+    directory = os.path.dirname(os.path.abspath(path))
+    tmp_path = None
     try:
-        with open(path, "w") as f:
+        os.makedirs(directory, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+                "w", dir=directory, prefix=".flow-config-", delete=False) as f:
+            tmp_path = f.name
             json.dump(cfg, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
         return True
     except OSError as e:
         print(f"[config] Could not save {path}: {e}")
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
         return False
 
 
 def feature_enabled(cfg: dict, feature: str) -> bool:
-    """True only if the master switch AND the named feature are both on."""
-    if not cfg.get("enabled", True):
-        return False
+    """Return the named feature's independent on/off state."""
     return bool(cfg.get("features", {}).get(feature, True))

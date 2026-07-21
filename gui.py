@@ -5,8 +5,7 @@ Layout:
   * Main window
       - Dashboard   — live weather + temperature, feature toggles, and the
                       manual theme changer (weather / time / colour), together.
-      - Appearance  — wallpaper look (sliders, patterns, animation, backend),
-                      sound volume, engine cadence, run-at-login.
+      - Settings    — wallpaper look, sound, engine cadence, run-at-login.
   * Separate "Focus & Tasks" window (opened from the header)
       - Pomodoro timer
       - To-do & schedules
@@ -21,7 +20,7 @@ import threading
 import datetime
 
 import tkinter as tk
-from tkinter import ttk, messagebox, colorchooser, filedialog
+from tkinter import ttk, messagebox, colorchooser, filedialog, font as tkfont
 
 import config
 import weather
@@ -53,9 +52,6 @@ def apply_values_to_config(cfg: dict, values: dict) -> dict:
     }
     cfg["weather_tint_strength"] = int(round(values["tint"]))
     cfg["sound_volume"] = int(round(values["volume"]))
-    smode = str(values.get("sound_mode", "loop")).lower()
-    cfg["sound_mode"] = smode if smode in config.SOUND_MODES else "loop"
-    cfg["sound_interval_minutes"] = max(1, int(values.get("sound_interval_minutes", 5)))
     cfg["music_volume"] = max(0, min(100, int(values.get("music_volume", 60))))
     cfg["pause_when_other_audio"] = bool(values.get("pause_when_other_audio", False))
     cfg["tick_interval_seconds"] = max(5, int(values["tick_interval"]))
@@ -71,7 +67,9 @@ def apply_values_to_config(cfg: dict, values: dict) -> dict:
         "long_break_min": max(1, int(values["p_long"])),
         "cycles_before_long": max(1, int(values["p_cycles"])),
     }
-    cfg["manual_weather"] = values["manual_weather"]
+    manual_weather = str(values["manual_weather"]).lower()
+    cfg["manual_weather"] = (
+        manual_weather if manual_weather in config.WEATHER_CHOICES else "auto")
     cfg["manual_time"] = values["manual_time"]
 
     color = (values.get("manual_theme_color") or "").strip()
@@ -177,8 +175,6 @@ def _fmt_temp(t):
 ACTION_TO_LABEL = {
     "notify": "Notify me",
     "chime": "Play a chime",
-    "set_weather": "Change the weather",
-    "set_theme": "Change accent colour",
 }
 LABEL_TO_ACTION = {v: k for k, v in ACTION_TO_LABEL.items()}
 
@@ -194,9 +190,8 @@ def _task_when_str(t):
 
 
 def _task_does_str(t):
-    a, v = t.get("action", ""), t.get("action_value", "")
-    return {"notify": "Notify me", "chime": "Play a chime",
-            "set_weather": f"Weather → {v}", "set_theme": f"Accent → {v}"}.get(a, a)
+    a = t.get("action", "")
+    return {"notify": "Notify me", "chime": "Play a chime"}.get(a, a)
 
 
 def _uv_label(uv):
@@ -233,6 +228,60 @@ def _fmt_details(d):
     return "   ·   ".join(bits) if bits else "live data unavailable"
 
 
+def _weather_summary(condition, phase, manual=False):
+    """Compact dashboard label: weather first, then time of day."""
+    weather_text = (condition or "unknown").capitalize()
+    phase_text = (phase or "unknown").lower()
+    suffix = "  ·  manual" if manual else ""
+    return f"{weather_text}  ·  {phase_text}{suffix}"
+
+
+def _weather_card_data(live, cfg, now=None):
+    """Apply current manual controls to cached live measurements."""
+    effective = weather.apply_overrides(live, cfg, now)
+    manual_time = (cfg.get("manual_time") or "auto").lower()
+    phase = (theme.normalize_phase(manual_time) if manual_time != "auto"
+             else theme.compute_day_phase(
+                 effective["sunrise"], effective["sunset"], now))
+    rgb, brightness = theme.compute_theme_color(
+        effective["condition"], effective["sunrise"], effective["sunset"],
+        phase=phase, now=now)
+    data = dict(effective)
+    data.update({"phase": phase, "color": list(rgb), "brightness": brightness})
+    return data
+
+
+def _shift_iso_date(value, days, today=None):
+    """Shift an ISO date, falling back to today when the field is invalid."""
+    today = today or datetime.date.today()
+    try:
+        base = datetime.date.fromisoformat(value)
+    except (TypeError, ValueError):
+        base = today
+    return (base + datetime.timedelta(days=days)).isoformat()
+
+
+def _sync_feature_vars(enabled, variables):
+    """Set every feature BooleanVar from the select-all control."""
+    for variable in variables:
+        variable.set(bool(enabled))
+
+
+def _select_all_state(cfg):
+    """Show select-all on only when saved on and every feature is selected."""
+    features = cfg.get("features", {})
+    return bool(cfg.get("enabled", True)) and all(
+        features.get(key, True) for key in config.FEATURE_KEYS)
+
+
+def _largest_fitting_font(text, available_width, measure, sizes=range(40, 19, -2)):
+    """Largest font size whose measured text fits the available width."""
+    for size in sizes:
+        if measure(text, size) <= available_width:
+            return size
+    return min(sizes)
+
+
 def _card(parent, title=None):
     """A white padded panel; returns the inner content frame."""
     outer = ttk.Frame(parent, style="Card.TFrame", padding=1)
@@ -242,6 +291,20 @@ def _card(parent, title=None):
     if title:
         ttk.Label(inner, text=title, style="CardH.TLabel").pack(anchor="w", pady=(0, 8))
     return inner
+
+
+def _responsive_label(parent, *, padding=0, **kwargs):
+    """Label whose wrap width tracks its container instead of clipping."""
+    label = ttk.Label(parent, wraplength=360, **kwargs)
+
+    def resize(event):
+        try:
+            label.configure(wraplength=max(120, event.width - padding))
+        except tk.TclError:
+            pass
+
+    parent.bind("<Configure>", resize, add="+")
+    return label
 
 
 # ---------------------------------------------------------
@@ -263,7 +326,7 @@ class App:
         self.lbl_cycles = None
         self.music_list = None
         self.btn_music_play = None
-        self._music_want = False   # user asked for music -> auto-advance tracks
+        self.timer_label = None
 
         root.title("Flow")
         root.geometry("600x780")
@@ -271,20 +334,30 @@ class App:
         self.status_lbl = None
         self._ui_key = None          # (dark, accent) currently applied
         self._apply_busy = False     # a preview tick is in flight
+        self._auto_apply_job = None  # coalesce rapid slider/spinbox changes
+        self._weather_refresh_job = None
+        self._weather_refresh_seconds = None
+        self._weather_refresh_generation = 0
+        self._weather_live = None
+        self._refresh_card_after_apply = False
         self._scroll_canvases = []   # tk.Canvas backing the scrollable tabs
+        self._scroll_items = {}      # canvas -> embedded content item
+        self._effective_swatch = None
         self._install_styles()
 
         self._build_vars()
         self._build_ui()
+        self._bind_auto_apply()
+        self._start_engine()
         self._poll_status_queue()
         self._timer_loop()
-        self.refresh_weather()      # populate the weather card at launch
+        self.refresh_weather()      # populate, then keep the weather card current
 
     # --- tk variables --------------------------------------------------
     def _build_vars(self):
         c = self.cfg
         f = c.get("features", {})
-        self.v_enabled = tk.BooleanVar(value=c.get("enabled", True))
+        self.v_enabled = tk.BooleanVar(value=_select_all_state(c))
         self.v_theme = tk.BooleanVar(value=f.get("dynamic_theme", True))
         self.v_wallpaper = tk.BooleanVar(value=f.get("wallpaper", True))
         self.v_sound = tk.BooleanVar(value=f.get("ambient_sound", True))
@@ -293,9 +366,8 @@ class App:
         self.v_volume = tk.DoubleVar(value=float(c.get("sound_volume", 25)))
         self._vol_save_job = None            # debounced save for the volume slider
         self.v_volume.trace_add("write", self._on_ambient_volume)
-        self.v_soundmode = tk.StringVar(value=c.get("sound_mode", "loop"))
-        self.v_soundinterval = tk.IntVar(value=int(c.get("sound_interval_minutes", 5)))
         self.v_musicvol = tk.IntVar(value=int(c.get("music_volume", 60)))
+        self.v_musicvol.trace_add("write", self._on_music_volume)
         self.v_duck = tk.BooleanVar(value=c.get("pause_when_other_audio", False))
         self.music_now = tk.StringVar(value="Nothing playing")
         self.v_tick = tk.IntVar(value=int(c.get("tick_interval_seconds", 30)))
@@ -317,7 +389,7 @@ class App:
         mc = c.get("manual_theme_color")
         self.v_color = tk.StringVar(value=("auto" if not mc else ",".join(map(str, mc))))
         self.v_runlogin = tk.BooleanVar(value=autostart.is_autostart_enabled())
-        self.v_status = tk.StringVar(value="Idle — press Start.")
+        self.v_status = tk.StringVar(value="Starting…")
 
         # Live weather card text.
         self.v_wicon = tk.StringVar(value="🌡️")
@@ -463,10 +535,22 @@ class App:
         vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         inner = ttk.Frame(canvas)
         iid = canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=vsb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
+        scrollbar_visible = [False]
+
+        def set_scrollbar(first, last):
+            vsb.set(first, last)
+            if float(first) <= 0.0 and float(last) >= 1.0:
+                if scrollbar_visible[0]:
+                    vsb.place_forget()
+                    scrollbar_visible[0] = False
+            elif not scrollbar_visible[0]:
+                vsb.place(relx=1.0, rely=0.0, relheight=1.0, anchor="ne")
+                scrollbar_visible[0] = True
+
+        canvas.configure(yscrollcommand=set_scrollbar)
+        canvas.pack(fill="both", expand=True)
         self._scroll_canvases.append(canvas)
+        self._scroll_items[canvas] = iid
 
         inner.bind("<Configure>",
                    lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -478,6 +562,48 @@ class App:
         canvas.bind("<Configure>", on_canvas)
         # Wheel/trackpad scrolling is handled app-wide by _on_mousewheel.
         return inner
+
+    def _on_main_tab_changed(self, _event=None):
+        """Force macOS to repaint the newly exposed canvas after style changes."""
+        self.root.after_idle(self._redraw_scroll_content)
+        # Aqua reports the tab mapped before its native view is ready to draw.
+        # A second pass after that view settles fixes the intermittent blank
+        # canvas that an idle-only callback leaves behind.
+        self.root.after(80, self._redraw_scroll_content)
+
+    def _redraw_scroll_content(self):
+        for canvas in self._scroll_canvases:
+            try:
+                if not canvas.winfo_ismapped():
+                    continue
+                item = self._scroll_items.get(canvas)
+                if item:
+                    # Aqua can leave a styled ttk tree logically mapped but
+                    # visually blank when its Notebook tab was hidden during
+                    # a theme change.  Detaching and reattaching the existing
+                    # frame forces a real native remap; merely hiding the
+                    # canvas item is not sufficient on macOS.
+                    inner = canvas.nametowidget(canvas.itemcget(item, "window"))
+                    yview = canvas.yview()
+                    canvas.itemconfigure(item, window="")
+                    canvas.update_idletasks()
+                    canvas.itemconfigure(item, window=inner,
+                                         width=canvas.winfo_width())
+                    if yview:
+                        canvas.yview_moveto(yview[0])
+                    # The native macOS renderer also needs each ttk
+                    # descendant exposed.  Without this, geometry and style
+                    # lookups are correct but the old pixels remain blank.
+                    pending = [inner]
+                    while pending:
+                        widget = pending.pop()
+                        pending.extend(widget.winfo_children())
+                        widget.event_generate("<Expose>")
+                        widget.update_idletasks()
+                canvas.configure(scrollregion=canvas.bbox("all"))
+                canvas.event_generate("<Expose>")
+            except tk.TclError:
+                continue
 
     def _on_mousewheel(self, event):
         """
@@ -503,6 +629,9 @@ class App:
         for c in self._scroll_canvases:
             try:
                 if c.winfo_ismapped():
+                    first, last = c.yview()
+                    if (step < 0 and first <= 0.0) or (step > 0 and last >= 1.0):
+                        return "break"
                     c.yview_scroll(step, "units")
                     return "break"
             except tk.TclError:
@@ -537,6 +666,8 @@ class App:
             self._ui_key = key
             self.pal = pal
             self._configure_styles()
+            self.root.after_idle(self._redraw_scroll_content)
+            self.root.after(80, self._redraw_scroll_content)
         except Exception as e:
             print(f"[gui] theme update skipped: {e}")
 
@@ -553,25 +684,20 @@ class App:
         header = ttk.Frame(self.root, padding=(14, 12, 14, 6))
         header.pack(fill="x")
         ttk.Label(header, text="Flow", style="H1.TLabel").pack(side="left")
-        # One button runs the show: Start applies immediately and keeps the
-        # engine live; Stop halts it. (No separate "Apply Now" to confuse.)
-        self.btn_engine = ttk.Button(header, text="▶  Start", style="Accent.TButton",
-                                     command=self.on_toggle_engine)
-        self.btn_engine.pack(side="right")
         ttk.Button(header, text="⏱  Focus & Tasks", style="Ghost.TButton",
                    command=self.open_tools).pack(side="right", padx=6)
 
         nb = ttk.Notebook(self.root)
+        self.main_notebook = nb
         nb.pack(fill="both", expand=True, padx=12, pady=(4, 6))
         nb.add(self._tab_dashboard(nb), text="  Dashboard  ")
-        nb.add(self._tab_appearance(nb), text="  Appearance  ")
+        nb.add(self._tab_settings(nb), text="  Settings  ")
+        nb.bind("<<NotebookTabChanged>>", self._on_main_tab_changed)
 
         bar = ttk.Frame(self.root, padding=(12, 4))
         bar.pack(fill="x", side="bottom")
         self.status_lbl = ttk.Label(bar, textvariable=self.v_status, style="Bar.TLabel")
         self.status_lbl.pack(side="left")
-        ttk.Button(bar, text="Save", style="Ghost.TButton",
-                   command=self.on_save).pack(side="right")
 
         # Apply the profile / accessibility / hemisphere / appearance / privacy
         # combos live.
@@ -598,10 +724,9 @@ class App:
         ttk.Label(mid, textvariable=self.v_wcond, style="Cond.TLabel").pack(anchor="w")
         ttk.Label(mid, textvariable=self.v_wsub, style="Muted.TLabel").pack(anchor="w")
         ttk.Label(top, textvariable=self.v_wtemp, style="Temp.TLabel").pack(side="right")
-        ttk.Label(wc, textvariable=self.v_wdetails, style="Muted.TLabel",
-                  wraplength=520).pack(anchor="w", pady=(8, 0))
-        ttk.Button(wc, text="↻ Refresh weather", style="Ghost.TButton",
-                   command=self.refresh_weather).pack(anchor="e", pady=(4, 0))
+        _responsive_label(
+            wc, textvariable=self.v_wdetails, style="Muted.TLabel"
+        ).pack(anchor="w", pady=(8, 0))
 
         # Mood profile ----------------------------------------------------
         pc = _card(body, "Mood profile")
@@ -611,22 +736,33 @@ class App:
             ttk.Radiobutton(prow, text=txt, value=val, variable=self.v_profile,
                             style="Card.TRadiobutton",
                             command=self._on_override_change).pack(side="left", padx=(0, 10))
-        ttk.Label(pc, style="Muted.TLabel", wraplength=520,
-                  text="A profile shifts the whole vibe — Focus is calm & quiet, "
-                       "Creativity vivid & lively, Relax warm & gentle.").pack(anchor="w", pady=(6, 0))
+        _responsive_label(
+            pc, style="Muted.TLabel",
+            text="A profile shifts the whole vibe — Focus is calm & quiet, "
+                 "Creativity vivid & lively, Relax warm & gentle."
+        ).pack(anchor="w", pady=(6, 0))
 
         # Master + features ----------------------------------------------
         fc = _card(body, "Features")
-        ttk.Checkbutton(fc, text="Enable everything (master switch)",
+        ttk.Checkbutton(fc, text="Enable everything (select all)",
                         style="Card.TCheckbutton", command=self.on_master_toggle,
                         variable=self.v_enabled).pack(anchor="w", pady=(0, 6))
-        for text, var, cmd in [("🎨  Dynamic accent theme", self.v_theme, None),
-                               ("🖼  Weather wallpaper", self.v_wallpaper, None),
-                               ("🔊  Ambient sound", self.v_sound, self.on_sound_toggle),
-                               ("✅  Tasks & schedules", self.v_tasks, None)]:
-            kw = {"command": cmd} if cmd else {}
-            ttk.Checkbutton(fc, text=text, style="Card.TCheckbutton",
-                            variable=var, **kw).pack(anchor="w", pady=1)
+        for feature, text, var in [
+                ("dynamic_theme", "🎨  System accent follows theme", self.v_theme),
+                ("wallpaper", "🖼  Weather wallpaper", self.v_wallpaper),
+                ("ambient_sound", "🔊  Ambient sound", self.v_sound),
+                ("tasks", "🔔  Task reminders", self.v_tasks)]:
+            ttk.Checkbutton(
+                fc, text=text, style="Card.TCheckbutton", variable=var,
+                command=lambda name=feature: self.on_feature_toggle(name)
+            ).pack(anchor="w", pady=1)
+        _responsive_label(
+            fc, style="Muted.TLabel",
+            text="System accent changes the Windows taskbar/title colour or the "
+                 "nearest named macOS accent. Auto accent colour follows weather "
+                 "and time; a picked colour below overrides it. Existing macOS "
+                 "apps may need relaunching."
+        ).pack(anchor="w", pady=(6, 0))
 
         # Manual theme changer -------------------------------------------
         mcard = _card(body, "Manual theme changer")
@@ -647,18 +783,12 @@ class App:
         self.v_color.trace_add("write", lambda *_: self._update_swatch())
         # Apply weather/time the instant the selection changes. A variable
         # trace is more reliable across platforms than a widget event.
-        self.v_weather.trace_add("write", lambda *_: self._on_override_change())
-        self.v_time.trace_add("write", lambda *_: self._on_override_change())
-        arow = ttk.Frame(mcard, style="Card.TFrame"); arow.pack(fill="x", pady=(8, 0))
-        ttk.Label(arow, text="Overrides apply the moment you change them.",
-                  style="Muted.TLabel").pack(side="left")
-        # Guaranteed manual trigger, in case a platform doesn't fire the trace.
-        ttk.Button(arow, text="Apply", style="Ghost.TButton",
-                   command=lambda: self._apply_live("Override applied")).pack(side="right")
+        self.v_weather.trace_add("write", lambda *_: self._on_manual_theme_change())
+        self.v_time.trace_add("write", lambda *_: self._on_manual_theme_change())
         return page
 
-    # --- Appearance tab ------------------------------------------------
-    def _tab_appearance(self, parent):
+    # --- Settings tab --------------------------------------------------
+    def _tab_settings(self, parent):
         page = ttk.Frame(parent, padding=(10, 8))
         body = self._make_scroll(page)
 
@@ -667,7 +797,7 @@ class App:
         ttk.Checkbutton(wp, text="Dynamic (subtle colour shift)", style="Card.TCheckbutton",
                         variable=self.v_wpdynamic).pack(anchor="w", pady=(6, 0))
         self._slider(wp, "Colour shift strength", self.v_wpshift)
-        ttk.Checkbutton(wp, text="Weather patterns (rain, sun, clouds, stars)",
+        ttk.Checkbutton(wp, text="Sun, moon, stars & weather patterns",
                         style="Card.TCheckbutton",
                         variable=self.v_wppatterns).pack(anchor="w", pady=(6, 0))
         ttk.Checkbutton(wp, text="Warm palette when it's cold outside",
@@ -676,23 +806,17 @@ class App:
 
         sc = _card(body, "Sound")
         self._slider(sc, "Ambient volume", self.v_volume)
-        mr = ttk.Frame(sc, style="Card.TFrame"); mr.pack(fill="x", pady=4)
-        ttk.Label(mr, text="Playback", style="Card.TLabel", width=12).pack(side="left")
-        ttk.Combobox(mr, textvariable=self.v_soundmode, state="readonly", width=8,
-                     values=config.SOUND_MODES).pack(side="left")
-        ttk.Label(mr, text="Every", style="Card.TLabel").pack(side="left", padx=(12, 2))
-        ttk.Spinbox(mr, from_=1, to=120, textvariable=self.v_soundinterval,
-                    width=5).pack(side="left")
-        ttk.Label(mr, text="min (random mode)", style="Muted.TLabel").pack(side="left", padx=4)
         ttk.Checkbutton(sc, text="Pause ambient when other audio is playing",
                         style="Card.TCheckbutton", variable=self.v_duck,
                         command=self._on_override_change).pack(anchor="w", pady=(6, 0))
         ttk.Button(sc, text="🎵  Sound files… (names + open folder)", style="Ghost.TButton",
                    command=self.on_manage_sounds).pack(anchor="w", pady=(8, 0))
-        ttk.Label(sc, style="Muted.TLabel", wraplength=460,
-                  text="loop = plays continuously. random = one clip now and then. "
-                       "Add several clips per weather for variety, e.g. "
-                       "rain.wav, rain2.wav — one is picked at random.").pack(anchor="w", pady=(6, 0))
+        _responsive_label(
+            sc, style="Muted.TLabel",
+            text="Ambience loops continuously. Add several clips per weather "
+                 "for variety, e.g. rain.wav and rain2.wav — a different one "
+                 "can be chosen when the weather changes."
+        ).pack(anchor="w", pady=(6, 0))
 
         # Seasons & transitions ------------------------------------------
         st = _card(body, "Seasons & transitions")
@@ -713,9 +837,11 @@ class App:
         ttk.Label(dr, text="Dark / Light", style="Card.TLabel", width=12).pack(side="left")
         ttk.Combobox(dr, textvariable=self.v_appearance, state="readonly", width=10,
                      values=config.APPEARANCE_CHOICES).pack(side="left")
-        ttk.Label(dc, style="Muted.TLabel", wraplength=460,
-                  text="auto follows the time of day. dark / light lock the whole "
-                       "device (and this window) to that mode.").pack(anchor="w", pady=(6, 0))
+        _responsive_label(
+            dc, style="Muted.TLabel",
+            text="auto follows the time of day. dark / light lock the whole "
+                 "device (and this window) to that mode."
+        ).pack(anchor="w", pady=(6, 0))
 
         # Accessibility ---------------------------------------------------
         ac = _card(body, "Accessibility")
@@ -723,9 +849,11 @@ class App:
         ttk.Label(ar, text="Mode", style="Card.TLabel", width=12).pack(side="left")
         ttk.Combobox(ar, textvariable=self.v_access, state="readonly", width=14,
                      values=config.ACCESSIBILITY_CHOICES).pack(side="left")
-        ttk.Label(ac, style="Muted.TLabel", wraplength=460,
-                  text="high_contrast forces bold, maximum-contrast colours and a "
-                       "black/white/yellow window, ignoring the time of day.").pack(anchor="w", pady=(6, 0))
+        _responsive_label(
+            ac, style="Muted.TLabel",
+            text="high_contrast forces bold, maximum-contrast colours and a "
+                 "black/white/yellow window, ignoring the time of day."
+        ).pack(anchor="w", pady=(6, 0))
 
         ec = _card(body, "Engine")
         ir = ttk.Frame(ec, style="Card.TFrame"); ir.pack(fill="x", pady=2)
@@ -739,10 +867,6 @@ class App:
                                values=config.city_choices())
         city_cb.pack(side="left")
         city_cb.bind("<<ComboboxSelected>>", lambda e: self._on_city_change())
-        ttk.Label(ec, style="Muted.TLabel", wraplength=460,
-                  text="Pick your city for live weather — no need to edit "
-                       "coordinates. Only this city-level location is ever "
-                       "used.").pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(ec, text="Set wallpaper on all monitors", style="Card.TCheckbutton",
                         variable=self.v_multimon,
                         command=self._on_override_change).pack(anchor="w", pady=(8, 0))
@@ -774,24 +898,60 @@ class App:
                   variable=var).pack(fill="x", side="left", expand=True, padx=8)
 
     # --- weather card --------------------------------------------------
+    def _schedule_weather_refresh(self):
+        seconds = max(30, int(self.cfg.get("weather_refresh_seconds", 600)))
+        if (self._weather_refresh_job is not None
+                and self._weather_refresh_seconds == seconds):
+            return
+        if self._weather_refresh_job is not None:
+            try:
+                self.root.after_cancel(self._weather_refresh_job)
+            except Exception:
+                pass
+        self._weather_refresh_seconds = seconds
+        self._weather_refresh_job = self.root.after(
+            seconds * 1000, self._automatic_weather_refresh)
+
+    def _automatic_weather_refresh(self):
+        self._weather_refresh_job = None
+        self.refresh_weather()
+
     def refresh_weather(self):
-        """Fetch the effective weather in the background and update the card."""
+        """Fetch weather now; completion schedules the next automatic fetch."""
+        if self._weather_refresh_job is not None:
+            try:
+                self.root.after_cancel(self._weather_refresh_job)
+            except Exception:
+                pass
+            self._weather_refresh_job = None
+        self._weather_refresh_generation += 1
+        generation = self._weather_refresh_generation
         self.v_wcond.set("Fetching weather…")
 
         def work():
             try:
-                w = weather.get_effective_weather(self.cfg)
-                mt = (self.cfg.get("manual_time") or "auto").lower()
-                ph = (theme.normalize_phase(mt) if mt != "auto"
-                      else theme.compute_day_phase(w["sunrise"], w["sunset"]))
-                rgb, bright = theme.compute_theme_color(
-                    w["condition"], w["sunrise"], w["sunset"], phase=ph)
-                data = dict(w)
-                data.update({"phase": ph, "color": list(rgb), "brightness": bright})
+                cfg = config.load_config()
+                live = weather.get_live_weather(cfg)
+                data = _weather_card_data(live, cfg)
             except Exception as e:
+                live = None
                 data = {"error": str(e)}
-            self.status_queue.put({"_weather_card": data})
+            self.status_queue.put({
+                "_weather_card": data,
+                "_weather_live": live,
+                "_weather_refresh_generation": generation,
+            })
         threading.Thread(target=work, daemon=True).start()
+
+    def _refresh_weather_overrides(self):
+        if self._weather_live is None:
+            self.refresh_weather()
+            return
+        try:
+            self._update_weather_card(
+                _weather_card_data(self._weather_live, self.cfg))
+        except Exception:
+            self.refresh_weather()
 
     def _update_weather_card(self, d):
         if "error" in d:
@@ -804,14 +964,16 @@ class App:
         self.v_wicon.set(_weather_icon(cond, is_night))
         self.v_wtemp.set(_fmt_temp(d.get("temperature")))
         tod = d.get("phase") or ("night" if is_night else "day")
-        manual = "  ·  manual" if d.get("condition_source") == "manual" else ""
-        self.v_wcond.set(f"{cond.capitalize()}  ·  {tod}{manual}")
+        self.v_wcond.set(_weather_summary(
+            cond, tod, manual=d.get("condition_source") == "manual"))
         loc = self.cfg.get("location", {}).get("name", "")
         src = d.get("source")
         self.v_wsub.set(f"{loc}   ({src})" if src else loc)
         self.v_wdetails.set(_fmt_details(d))
         # Match the window's look to the time of day.
         if d.get("color") and d.get("brightness") is not None:
+            self._effective_swatch = tuple(d["color"])
+            self._update_swatch()
             self._theme_ui(d["color"], d["brightness"])
 
     # --- manual colour -------------------------------------------------
@@ -820,7 +982,8 @@ class App:
             r, g, b = [int(x) for x in self.v_color.get().split(",")]
             return f"#{r:02x}{g:02x}{b:02x}"
         except (ValueError, AttributeError):
-            return self.pal["CARD"]
+            return (_hex(self._effective_swatch) if self._effective_swatch
+                    else self.pal["CARD"])
 
     def _update_swatch(self):
         if self._alive(getattr(self, "swatch", None)):
@@ -840,7 +1003,46 @@ class App:
     # --- live apply ----------------------------------------------------
     def _on_override_change(self):
         """A manual override changed — apply it right away."""
-        self._apply_live("Override updated")
+        self._schedule_auto_apply("Settings updated")
+
+    def _on_manual_theme_change(self):
+        self._schedule_auto_apply("Settings updated", refresh_card=True)
+
+    def _bind_auto_apply(self):
+        """Persist and apply every main-window setting without action buttons."""
+        variables = (
+            self.v_theme, self.v_wallpaper, self.v_tint, self.v_wpdynamic,
+            self.v_wpshift, self.v_wppatterns, self.v_wpwarmth,
+            self.v_duck, self.v_tick, self.v_weatherrefresh, self.v_smooth, self.v_season,
+            self.v_multimon,
+        )
+        for variable in variables:
+            variable.trace_add("write", lambda *_: self._schedule_auto_apply())
+
+    def _schedule_auto_apply(self, note="Settings updated", refresh_card=False):
+        self._refresh_card_after_apply |= refresh_card
+        job = self._auto_apply_job
+        if job:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+        self._auto_apply_job = self.root.after(
+            150, lambda: self._flush_auto_apply(note))
+
+    def _flush_auto_apply(self, note):
+        self._auto_apply_job = None
+        refresh_card = self._refresh_card_after_apply
+        self._refresh_card_after_apply = False
+        self._apply_live(note)
+        if refresh_card:
+            self._refresh_weather_overrides()
+
+    def _start_engine(self):
+        self.engine_thread = engine.EngineThread(
+            on_status=lambda st: self.status_queue.put(st))
+        self.engine_thread.start()
+        self.v_status.set("Running — settings apply automatically.")
 
     def _on_city_change(self):
         """City picked — save the new location, re-fetch weather, and apply."""
@@ -873,6 +1075,11 @@ class App:
             self.engine_thread.wake()
         self.v_status.set(f"Ambient volume: {int(self.v_volume.get())}%")
 
+    def _on_music_volume(self, *_):
+        """Apply music volume immediately and persist it with other settings."""
+        music.set_volume(self.v_musicvol.get())
+        self._schedule_auto_apply("Music volume updated")
+
     def _apply_live(self, note):
         """
         Persist current settings and apply them *immediately* so a manual
@@ -883,6 +1090,7 @@ class App:
         try:
             self._collect()
             config.save_config(self.cfg)
+            self._schedule_weather_refresh()
             if self.engine_thread and self.engine_thread.is_alive():
                 # The engine applies on its own (single) thread — just nudge it.
                 # Running a second tick here would fight it (concurrent pygame /
@@ -890,8 +1098,7 @@ class App:
                 # the new look (e.g. a picked accent) applies immediately instead
                 # of being suppressed by the signature / redraw-interval checks.
                 eng = self.engine_thread.engine
-                eng._last_theme = None
-                eng._last_wall_at = None
+                eng.invalidate_visuals()
                 self.engine_thread.wake()
                 self.v_status.set(note)
                 return
@@ -944,6 +1151,7 @@ class App:
         self.lbl_cycles = None
         self.music_list = None
         self.btn_music_play = None
+        self.timer_label = None
         self.clock_settings = None
         self.btn_clock_extra = None
 
@@ -972,11 +1180,12 @@ class App:
         ttk.Button(files, text="Add songs…", style="Ghost.TButton", command=self.on_music_add).pack(side="left")
         ttk.Button(files, text="Open music folder", style="Ghost.TButton", command=self.on_music_open).pack(side="left", padx=4)
         ttk.Button(files, text="Refresh", style="Ghost.TButton", command=self.on_music_refresh).pack(side="left")
-        ttk.Label(card, style="Muted.TLabel", wraplength=520,
-                  text="Drop .mp3 / .ogg / .wav files in the music folder (or Add songs…), "
-                       "then Play. Plays alongside the weather ambience.").pack(anchor="w", pady=(6, 0))
+        _responsive_label(
+            card, style="Muted.TLabel",
+            text="Drop .mp3 / .ogg / .wav files in the music folder (or Add songs…), "
+                 "then Play. Music pauses weather ambience while it plays."
+        ).pack(anchor="w", pady=(6, 0))
 
-        self.v_musicvol.trace_add("write", lambda *_: music.set_volume(self.v_musicvol.get()))
         self.on_music_refresh()
         self._update_music_label()
         return page
@@ -1005,7 +1214,6 @@ class App:
         if self._alive(self.music_list) and self.music_list.curselection():
             idx = self.music_list.curselection()[0]
         if music.play_list(tracks, idx, self.v_musicvol.get()):
-            self._music_want = True
             self._nudge_engine()          # pause ambient right away
         else:
             messagebox.showwarning("Music", "Couldn't play — is pygame installed? (pip install pygame)")
@@ -1025,7 +1233,6 @@ class App:
 
     def on_music_stop(self):
         music.stop()
-        self._music_want = False
         self._nudge_engine()              # resume ambient now that music stopped
         self._update_music_label()
 
@@ -1086,7 +1293,11 @@ class App:
 
         # Shared big display + controls.
         disp = _card(page)
-        ttk.Label(disp, textvariable=self.v_timer, style="Timer.TLabel").pack(pady=(6, 2))
+        self.timer_label = ttk.Label(
+            disp, textvariable=self.v_timer, style="Timer.TLabel",
+            anchor="center", justify="center")
+        self.timer_label.pack(fill="x", pady=(6, 2))
+        disp.bind("<Configure>", lambda _event: self._fit_timer_text())
         self.lbl_cycles = ttk.Label(disp, text="", style="Muted.TLabel")
         self.lbl_cycles.pack()
         ctl = ttk.Frame(disp, style="Card.TFrame"); ctl.pack(pady=12)
@@ -1110,6 +1321,22 @@ class App:
     def _active_clock(self):
         return {"pomodoro": self.pomo, "timer": self.timer,
                 "stopwatch": self.stopwatch}[self.v_clockmode.get()]
+
+    def _fit_timer_text(self):
+        """Shrink long timer states enough to fit narrow Focus windows."""
+        if not self._alive(self.timer_label):
+            return
+        available = max(220, self.timer_label.winfo_width() - 12)
+        text = self.v_timer.get()
+
+        def measure(value, size):
+            return tkfont.Font(
+                root=self.root, family="Helvetica", size=size,
+                weight="bold").measure(value)
+
+        size = _largest_fitting_font(text, available, measure)
+        self.timer_label.configure(
+            font=("Helvetica", size, "bold"), wraplength=available)
 
     def _on_clockmode(self):
         self._rebuild_clock_settings()
@@ -1212,11 +1439,16 @@ class App:
         self.date_row = ttk.Frame(form, style="Card.TFrame")
         ttk.Label(self.date_row, text="On", style="Card.TLabel", width=8).pack(side="left")
         ttk.Entry(self.date_row, textvariable=self.t_date, width=12).pack(side="left")
-        for txt, days in [("Today", 0), ("Tomorrow", 1), ("+1 week", 7)]:
-            ttk.Button(self.date_row, text=txt, style="Ghost.TButton",
-                       command=lambda d=days: self.t_date.set(
-                           (datetime.date.today() + datetime.timedelta(days=d)).isoformat())
-                       ).pack(side="left", padx=3)
+        ttk.Button(self.date_row, text="Today", style="Ghost.TButton",
+                   command=lambda: self.t_date.set(datetime.date.today().isoformat())
+                   ).pack(side="left", padx=3)
+        ttk.Button(self.date_row, text="Tomorrow", style="Ghost.TButton",
+                   command=lambda: self.t_date.set(
+                       (datetime.date.today() + datetime.timedelta(days=1)).isoformat())
+                   ).pack(side="left", padx=3)
+        ttk.Button(self.date_row, text="+1 week", style="Ghost.TButton",
+                   command=lambda: self.t_date.set(_shift_iso_date(self.t_date.get(), 7))
+                   ).pack(side="left", padx=3)
 
         self.t_action.trace_add("write", lambda *_: self._on_task_action_change())
         self.t_repeat.trace_add("write", lambda *_: self._on_task_repeat_change())
@@ -1238,23 +1470,9 @@ class App:
         for w in self.val_row.winfo_children():
             w.destroy()
         action = LABEL_TO_ACTION.get(self.t_action.get(), "notify")
-        if action == "set_weather":
-            ttk.Label(self.val_row, text="Weather", style="Card.TLabel", width=8).pack(side="left")
-            if self.t_value.get() not in config.WEATHER_CHOICES:
-                self.t_value.set("rain")
-            ttk.Combobox(self.val_row, textvariable=self.t_value, state="readonly",
-                         width=10, values=config.WEATHER_CHOICES).pack(side="left")
-        elif action == "set_theme":
-            ttk.Label(self.val_row, text="Colour", style="Card.TLabel", width=8).pack(side="left")
-            if not self.t_value.get() or "," not in self.t_value.get():
-                self.t_value.set("255,150,60")
-            ttk.Entry(self.val_row, textvariable=self.t_value, width=12).pack(side="left")
-            ttk.Label(self.val_row, text="red,green,blue (0–255)",
-                      style="Muted.TLabel").pack(side="left", padx=4)
-        else:
-            self.t_value.set("")
-            msg = "— just shows a notification" if action == "notify" else "— just plays a chime"
-            ttk.Label(self.val_row, text=msg, style="Muted.TLabel").pack(side="left")
+        self.t_value.set("")
+        msg = "— just shows a notification" if action == "notify" else "— just plays a chime"
+        ttk.Label(self.val_row, text=msg, style="Muted.TLabel").pack(side="left")
 
     def _on_task_repeat_change(self):
         """The date picker only makes sense for a one-off reminder."""
@@ -1269,6 +1487,8 @@ class App:
     def _update_timer_label(self):
         active = self._active_clock()
         self.v_timer.set(active.label())
+        if self._alive(self.timer_label):
+            self.root.after_idle(self._fit_timer_text)
         if self._alive(self.lbl_cycles):
             m = self.v_clockmode.get()
             if m == "pomodoro":
@@ -1307,12 +1527,9 @@ class App:
             engine.notify("Timer", "Timer finished.")
             self.v_status.set("Timer finished.")
         self._update_timer_label()
-        # Auto-advance music when a track finishes.
-        if (self._music_want and music.has_playlist()
-                and not music.is_playing() and not music.is_paused()):
-            music.next_track(self.v_musicvol.get())
-        # Keep the music label + Play/Pause button in sync with playback,
-        # even when the state changes on its own (a track ending).
+        # Music plays only when the user presses Play — it never advances or
+        # restarts on its own. When a track ends it simply stops; we just keep
+        # the label + Play/Pause button in sync with that.
         self._update_music_label()
         self.root.after(1000, self._timer_loop)
 
@@ -1371,7 +1588,7 @@ class App:
         except ValueError:
             messagebox.showerror("Bad time", "Enter the time as HH:MM (e.g. 07:30).")
             return
-        value = self.t_value.get().strip() if action in ("set_weather", "set_theme") else ""
+        value = ""
 
         try:
             if self.t_repeat.get() == "Just once":
@@ -1414,8 +1631,6 @@ class App:
             "tasks": self.v_tasks.get(),
             "tint": self.v_tint.get(),
             "volume": self.v_volume.get(),
-            "sound_mode": self.v_soundmode.get(),
-            "sound_interval_minutes": self.v_soundinterval.get(),
             "music_volume": self.v_musicvol.get(),
             "pause_when_other_audio": self.v_duck.get(),
             "tick_interval": self.v_tick.get(),
@@ -1444,51 +1659,27 @@ class App:
         })
 
     def on_master_toggle(self):
-        """
-        Make the master switch take effect immediately: persist it and push it
-        to the running engine (which otherwise wouldn't see the change until the
-        next Save/Start). Turning it off silences ambience right away and stops
-        further updates; it leaves the current wallpaper/accent in place.
-        """
+        """Select or clear every independent feature, then apply immediately."""
         on = self.v_enabled.get()
-        if on:
-            # Enabling applies immediately (bypasses the redraw guard).
-            self._apply_live("Enabled")
-            return
-        # Disabling: persist, silence sound now, and stop further updates.
-        self._collect()
-        config.save_config(self.cfg)
-        try:
+        _sync_feature_vars(
+            on, (self.v_theme, self.v_wallpaper, self.v_sound, self.v_tasks))
+        if not on:
             sound.stop_sound()
-        except Exception:
-            pass
-        if self.engine_thread and self.engine_thread.is_alive():
-            self.engine_thread.wake()
-            self.v_status.set("Disabled — engine idle (wallpaper/accent left as-is).")
-        else:
-            self.v_status.set("Disabled.")
+        self._apply_live("All features enabled" if on else "All features off")
+
+    def on_feature_toggle(self, feature):
+        """Apply one feature without requiring the select-all control."""
+        if self.v_enabled.get() and not all(
+                var.get() for var in
+                (self.v_theme, self.v_wallpaper, self.v_sound, self.v_tasks)):
+            self.v_enabled.set(False)
+        if feature == "ambient_sound" and not self.v_sound.get():
+            sound.stop_sound()
+        self._apply_live("Feature updated")
 
     def on_sound_toggle(self):
-        """Turn ambient sound on/off *now* — unticking stops it immediately."""
-        self._collect()
-        config.save_config(self.cfg)
-        if not self.v_sound.get():
-            try:
-                sound.stop_sound()          # kill the looping clip right away
-            except Exception:
-                pass
-            self.v_status.set("Ambient sound off.")
-        else:
-            self.v_status.set("Ambient sound on.")
-        if self.engine_thread and self.engine_thread.is_alive():
-            self.engine_thread.wake()
-
-    def on_save(self):
-        self._collect()
-        if config.save_config(self.cfg):
-            self.v_status.set("Settings saved.")
-        else:
-            messagebox.showerror("Error", "Could not write config.json.")
+        """Compatibility hook for callers toggling ambient sound directly."""
+        self.on_feature_toggle("ambient_sound")
 
     def on_manage_sounds(self):
         """Show the exact filenames each weather needs, and open the folder."""
@@ -1510,32 +1701,25 @@ class App:
         ok = autostart.set_autostart(self.v_runlogin.get())
         if not ok:
             self.v_runlogin.set(autostart.is_autostart_enabled())
+        self._collect()
+        config.save_config(self.cfg)
         self.v_status.set("Run-at-login: "
                           + ("enabled" if self.v_runlogin.get() else "disabled"))
-
-    def on_toggle_engine(self):
-        if self.engine_thread and self.engine_thread.is_alive():
-            self.engine_thread.stop()
-            self.engine_thread = None
-            self.btn_engine.config(text="▶  Start")
-            self.v_status.set("Stopped.")
-        else:
-            # Save current settings, then start the engine — its first tick
-            # applies theme/wallpaper/sound immediately.
-            self._collect()
-            config.save_config(self.cfg)
-            self.engine_thread = engine.EngineThread(
-                on_status=lambda st: self.status_queue.put(st))
-            self.engine_thread.start()
-            self.btn_engine.config(text="■  Stop")
-            self.v_status.set("Running — applying now…")
 
     def _poll_status_queue(self):
         try:
             while True:
                 st = self.status_queue.get_nowait()
                 if "_weather_card" in st:
+                    generation = st.get("_weather_refresh_generation")
+                    if (generation is not None
+                            and generation != self._weather_refresh_generation):
+                        continue
+                    if st.get("_weather_live") is not None:
+                        self._weather_live = st["_weather_live"]
                     self._update_weather_card(st["_weather_card"])
+                    if generation is not None:
+                        self._schedule_weather_refresh()
                     continue
                 self.v_status.set(self._format_status(st))
                 if "condition" in st:            # engine status also feeds the card
@@ -1549,7 +1733,7 @@ class App:
         if "error" in st:
             return f"Error: {st['error']}"
         if not st.get("enabled", True):
-            return "Disabled (master switch off)."
+            return "All features off."
         parts = [f"{st.get('condition', '?')}",
                  st.get("phase") or ("night" if st.get("is_night") else "day"),
                  _fmt_temp(st.get("temperature")),

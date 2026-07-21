@@ -17,12 +17,12 @@ import wave
 import config
 import weather
 import theme
-import json as _json
 import wallpaper
 import sound
 import tasks as tasks_mod
 import autostart
 import engine
+import processlock
 
 _passed = 0
 _failed = 0
@@ -61,17 +61,24 @@ def test_config():
               cfg2["weather_refresh_seconds"] == 600 and cfg2["tick_interval_seconds"] == 30)
         check("pomodoro defaults present",
               cfg2["pomodoro"]["work_min"] == 25)
-        check("feature gated by master switch",
-              config.feature_enabled(cfg2, "dynamic_theme") is False)
-        cfg2["enabled"] = True
-        check("feature on when master on",
+        check("config save leaves no partial temp file",
+              not any(name.startswith(".flow-config-") for name in os.listdir(d)))
+        check("feature remains on when select-all is off",
               config.feature_enabled(cfg2, "dynamic_theme") is True)
+        cfg2["features"]["dynamic_theme"] = False
+        check("feature follows its own switch",
+              config.feature_enabled(cfg2, "dynamic_theme") is False)
         # Retired keys are stripped from old config files on load.
         import json as _json
         with open(p, "w") as f:
-            _json.dump({"enabled": True, "location_precision": 2}, f)
+            _json.dump({"enabled": True, "location_precision": 2,
+                        "sound_mode": "random", "sound_interval_minutes": 5,
+                        "manual_weather": "night"}, f)
         cfg3 = config.load_config(p)
         check("retired location_precision dropped", "location_precision" not in cfg3)
+        check("retired random sound mode dropped", "sound_mode" not in cfg3)
+        check("legacy night weather becomes auto", cfg3["manual_weather"] == "auto")
+        check("night absent from weather choices", "night" not in config.WEATHER_CHOICES)
 
 
 # ---------------------------------------------------------
@@ -108,6 +115,9 @@ def test_weather():
         check("manual time night", weather.get_effective_weather(cfg)["is_night"] is True)
         cfg["manual_time"] = "day"
         check("manual time day", weather.get_effective_weather(cfg)["is_night"] is False)
+        cfg["manual_weather"] = "night"
+        check("night is not a weather override",
+              weather.get_effective_weather(cfg)["condition"] == "clear")
     finally:
         weather.get_weather = orig
 
@@ -434,6 +444,17 @@ def test_wallpaper_patterns():
     for cond in ("clear", "cloud", "rain", "storm", "night", "cloudnight"):
         check(f"{cond} pattern paints pixels", paints(cond))
 
+    # Clear afternoon must contain a visible bright sun at the expected arc
+    # position when celestial/weather patterns are enabled.
+    w, h, afternoon = 160, 100, 0.72
+    raw, stride = wallpaper._build_raw_gradient(w, h, (70, 100, 170), (20, 35, 80))
+    cx, cy, _ = wallpaper._sun_xy(w, h, afternoon)
+    offset = cy * stride + 1 + cx * 3
+    before_sun = sum(raw[offset:offset + 3])
+    wallpaper._render_clear(raw, stride, w, h, 0.3, 0.8, afternoon)
+    check("clear afternoon draws a bright sun",
+          sum(raw[offset:offset + 3]) > before_sun + 100)
+
     # Cloudy night differs from a clear night (clouds added), and the moon
     # position tracks the `sun` fraction (east vs west).
     def render(cond, sun):
@@ -479,6 +500,70 @@ def test_wallpaper_patterns():
             wallpaper.CACHE_DIR = orig
 
 
+def test_wallpaper_original_archive():
+    section("wallpaper original snapshot")
+    saved = (wallpaper.CACHE_DIR, wallpaper.ORIGINAL_FILE,
+             wallpaper.get_current_wallpaper, wallpaper.set_wallpaper,
+             wallpaper.shutil.copy2)
+    with tempfile.TemporaryDirectory() as d:
+        cache = os.path.join(d, "cache")
+        original = os.path.join(d, "original.png")
+        with open(original, "wb") as f:
+            f.write(b"original wallpaper bytes")
+        restored = []
+        try:
+            wallpaper.CACHE_DIR = cache
+            wallpaper.ORIGINAL_FILE = os.path.join(cache, "original_wallpaper.txt")
+            wallpaper.get_current_wallpaper = lambda: original
+            wallpaper.set_wallpaper = lambda path, multi=True: restored.append(path) or True
+            wallpaper.capture_original_once()
+            with open(wallpaper.ORIGINAL_FILE) as f:
+                archived = f.read().strip()
+            check("original wallpaper copied into stable cache",
+                  os.path.isfile(archived) and archived != original)
+            check("archived original is not classified as generated",
+                  wallpaper._is_ours(archived) is False)
+            generated = os.path.join(cache, "wallpaper_clear_test.png")
+            check("generated wallpaper is classified as ours",
+                  wallpaper._is_ours(generated) is True)
+            os.remove(original)
+            check("restore survives source file removal", wallpaper.restore_original())
+            check("restore uses archived original", restored == [archived])
+
+            # If the user changes their desktop while Flow is off, the newly
+            # visible wallpaper must replace the stale saved marker.
+            newer = os.path.join(d, "newer.heic")
+            with open(newer, "wb") as f:
+                f.write(b"new manually selected wallpaper")
+            wallpaper.get_current_wallpaper = lambda: newer
+            wallpaper.capture_original_once()
+            with open(wallpaper.ORIGINAL_FILE) as f:
+                refreshed = f.read().strip()
+            with open(refreshed, "rb") as f:
+                refreshed_bytes = f.read()
+            check("current non-Flow wallpaper replaces stale marker",
+                  refreshed_bytes == b"new manually selected wallpaper")
+
+            protected = os.path.join(d, "protected.heic")
+            with open(protected, "wb") as f:
+                f.write(b"protected system wallpaper")
+            wallpaper.get_current_wallpaper = lambda: protected
+            def reject_metadata(*_args, **_kwargs):
+                raise PermissionError("metadata protected")
+            wallpaper.shutil.copy2 = reject_metadata
+            wallpaper.capture_original_once()
+            with open(wallpaper.ORIGINAL_FILE) as f:
+                protected_archive = f.read().strip()
+            with open(protected_archive, "rb") as f:
+                protected_bytes = f.read()
+            check("protected wallpaper falls back to content-only copy",
+                  protected_bytes == b"protected system wallpaper")
+        finally:
+            (wallpaper.CACHE_DIR, wallpaper.ORIGINAL_FILE,
+             wallpaper.get_current_wallpaper, wallpaper.set_wallpaper,
+             wallpaper.shutil.copy2) = saved
+
+
 # ---------------------------------------------------------
 # sound
 # ---------------------------------------------------------
@@ -497,16 +582,168 @@ def test_sound():
         sample = os.path.join(d, "rain.wav")
         with wave.open(sample, "rb") as wf:
             check("wav mono 16-bit", wf.getnchannels() == 1 and wf.getsampwidth() == 2)
-            check("wav has frames", wf.getnframes() > 1000)
+            check("ambient loop is long enough", wf.getnframes() >= wf.getframerate() * 10)
         # second call creates nothing new
         again = sound.ensure_placeholder_sounds(directory=d)
         check("placeholders idempotent", again == [])
+        custom = os.path.join(d, "rain.wav")
+        with open(custom, "wb") as f:
+            f.write(b"custom rain")
+        check("custom sounds are preserved", sound.ensure_placeholder_sounds(d) == [])
+        with open(custom, "rb") as f:
+            check("custom sound bytes unchanged", f.read() == b"custom rain")
+
+        class FakeChannel:
+            def __init__(self):
+                self.busy = True
+
+            def get_busy(self):
+                return self.busy
+
+        class FakeSound:
+            def __init__(self):
+                self.channel = FakeChannel()
+                self.loops = None
+
+            def set_volume(self, _value):
+                pass
+
+            def play(self, loops=0):
+                self.loops = loops
+                return self.channel
+
+            def stop(self):
+                self.channel.busy = False
+
+        class FakeMixer:
+            def __init__(self):
+                self.loaded = FakeSound()
+
+            def Sound(self, _path):
+                return self.loaded
+
+        old = (sound._ensure_mixer, sound._mixer, sound.current_sound,
+               sound._current_channel, sound._current_path,
+               sound._claim_ambient_lock)
+        try:
+            mixer = FakeMixer()
+            sound._ensure_mixer = lambda: True
+            sound._mixer = mixer
+            sound.current_sound = None
+            sound._current_channel = None
+            sound._claim_ambient_lock = lambda: True
+            check("ambient playback starts", sound.play_sound(sample, loop=True) is True)
+            check("pygame receives infinite-loop flag", mixer.loaded.loops == -1)
+            check("active channel reports playing", sound.ambient_is_playing() is True)
+            mixer.loaded.channel.busy = False
+            check("dropped channel reports stopped", sound.ambient_is_playing() is False)
+            sound.stop_sound()
+            sound._claim_ambient_lock = lambda: False
+            check("second process cannot start ambient",
+                  sound.play_sound(sample, loop=True) is False)
+        finally:
+            (sound._ensure_mixer, sound._mixer, sound.current_sound,
+             sound._current_channel, sound._current_path,
+             sound._claim_ambient_lock) = old
+
+
+def test_process_coordination():
+    section("cross-process engine and audio ownership")
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = os.path.join(directory, "owner.lock")
+        first = processlock.ProcessFileLock(lock_path)
+        second = processlock.ProcessFileLock(lock_path)
+        check("first process lock acquires", first.acquire() is True)
+        check("second process lock is excluded", second.acquire() is False)
+        check("held lock is visible to peers", second.held_elsewhere() is True)
+        first.release()
+        check("released process lock can transfer", second.acquire() is True)
+        second.release()
+
+        cfg_path = os.path.join(directory, "config.json")
+        before = engine._engine_wake_stamp(cfg_path)
+        engine._signal_engine_wake(cfg_path)
+        check("engine wake signal crosses processes",
+              engine._engine_wake_stamp(cfg_path) != before)
+
+        first_gui = processlock.ProcessPresence(
+            "gui-test", cfg_path, pid=os.getpid() + 1000000)
+        second_gui = processlock.ProcessPresence(
+            "gui-test", cfg_path, pid=os.getpid() + 1000001)
+        observer = processlock.ProcessPresence(
+            "gui-test", cfg_path, pid=os.getpid() + 1000002)
+        try:
+            check("no GUI process is initially present", observer.active() is False)
+            check("first GUI process registers", first_gui.register() is True)
+            check("GUI presence is visible across processes", observer.active() is True)
+            check("second GUI process registers", second_gui.register() is True)
+            first_gui.unregister()
+            check("one closing GUI keeps remaining GUI present",
+                  observer.active() is True)
+        finally:
+            first_gui.unregister()
+            second_gui.unregister()
+        check("last closing GUI clears presence", observer.active() is False)
+
+        cfg = config.default_config()
+        background = engine._background_config(cfg, gui_open=False)
+        check("headless background disables ambience only",
+              background["features"]["ambient_sound"] is False
+              and background["features"]["wallpaper"] is True
+              and cfg["features"]["ambient_sound"] is True)
+        check("open GUI preserves ambient config",
+              engine._background_config(cfg, gui_open=True) is cfg)
+
+    import music
+
+    class PeerMusicLock:
+        owned = False
+
+        @staticmethod
+        def held_elsewhere():
+            return True
+
+    old_lock, old_playing = music._music_lock, music.is_playing
+    try:
+        music._music_lock = PeerMusicLock()
+        music.is_playing = lambda: False
+        check("background engine sees Flow music in GUI process",
+              music.is_playing_anywhere() is True)
+    finally:
+        music._music_lock, music.is_playing = old_lock, old_playing
+
+    old_mixer = sound._mixer
+    old_ensure = sound._ensure_mixer
+    try:
+        mixer_starts = {"count": 0}
+        sound._mixer = None
+        sound._ensure_mixer = lambda: mixer_starts.__setitem__(
+            "count", mixer_starts["count"] + 1)
+        check("checking idle music does not open an audio device",
+              music.is_playing() is False and sound._mixer is None)
+        music.set_volume(40)
+        music.stop()
+        check("idle music controls do not open an audio device",
+              mixer_starts["count"] == 0 and sound._mixer is None)
+    finally:
+        sound._mixer = old_mixer
+        sound._ensure_mixer = old_ensure
 
 
 def test_music():
     section("music player")
     import music
     check("music dir is absolute", os.path.isabs(music.MUSIC_DIR))
+    with tempfile.TemporaryDirectory() as d:
+        created = music.ensure_sample_tracks(d)
+        check("empty music folder gets two samples", len(created) == 2)
+        check("sample names are friendly",
+              [os.path.basename(p) for p in created] == list(music.SAMPLE_TRACKS))
+        with wave.open(created[0], "rb") as wf:
+            check("sample music is valid long WAV",
+                  wf.getnchannels() == 1
+                  and wf.getnframes() >= wf.getframerate() * 10)
+        check("sample seeding is idempotent", music.ensure_sample_tracks(d) == [])
     with tempfile.TemporaryDirectory() as d:
         for fn in ["b_song.mp3", "a_song.ogg", "tune.wav", "notes.txt", "cover.jpg"]:
             open(os.path.join(d, fn), "wb").close()
@@ -601,6 +838,26 @@ def test_duck_other_audio():
          sound.pick_base, weather.get_weather, ac.external_audio_active,
          music.is_playing) = saved
 
+    cfg = config.default_config()
+    cfg["tick_interval_seconds"] = 30
+    cfg["pause_when_other_audio"] = True
+    eng = engine.Engine()
+    check("paused ambient polls soon enough to resume",
+          engine._engine_poll_interval(cfg, eng, 30) == 5)
+    cfg["pause_when_other_audio"] = False
+    check("idle engine retains configured cadence",
+          engine._engine_poll_interval(cfg, eng, 30) == 30)
+    eng._sound_waiting_for_priority = True
+    check("priority-paused ambient keeps resume polling",
+          engine._engine_poll_interval(cfg, eng, 30) == 5)
+    eng._sound_waiting_for_priority = False
+    eng._sound_on = True
+    check("playing ambient monitors dropped playback",
+          engine._engine_poll_interval(cfg, eng, 30) == 5)
+    eng.transitioning = True
+    check("visual transition keeps fastest cadence",
+          engine._engine_poll_interval(cfg, eng, 30) == 0.5)
+
 
 def test_audio_priority():
     section("audio priority: chime > music > ambient")
@@ -659,7 +916,7 @@ def test_audio_priority():
 
 
 def test_sound_variants_and_modes():
-    section("sound variants + random mode")
+    section("sound variants + continuous loop")
     import random as _r
     import datetime as dt
 
@@ -690,15 +947,15 @@ def test_sound_variants_and_modes():
     check("cloudy stays cloud", sound.ambient_base("cloud", False, 0) == "cloud")
     check("sounds dir is absolute", os.path.isabs(sound.SOUNDS_DIR))
 
-    # --- engine random mode: occasional, not continuous --------------
-    counts = {"play": 0, "stop": 0}
+    # --- legacy random config still produces one continuous loop ------
+    calls = []
     saved = (sound.play_ambient, sound.stop_sound, sound.set_volume,
-             sound.pick_variant, theme.apply_theme_color,
+             sound.pick_base, theme.apply_theme_color,
              wallpaper.apply_weather_wallpaper)
-    sound.play_ambient = lambda *a, **k: counts.__setitem__("play", counts["play"] + 1)
-    sound.stop_sound = lambda *a, **k: counts.__setitem__("stop", counts["stop"] + 1)
+    sound.play_ambient = lambda *a, **k: calls.append(k) or True
+    sound.stop_sound = lambda *a, **k: None
     sound.set_volume = lambda *a, **k: None
-    sound.pick_variant = lambda *a, **k: "sounds/rain.wav"
+    sound.pick_base = lambda *a, **k: "sounds/rain.wav"
     theme.apply_theme_color = lambda *a, **k: "t"
     wallpaper.apply_weather_wallpaper = lambda *a, **k: True
     try:
@@ -710,14 +967,22 @@ def test_sound_variants_and_modes():
         eng = engine.Engine()
         t0 = dt.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
         eng.step(cfg, None, now=t0)
-        check("random plays once at start", counts["play"] == 1)
+        check("ambient starts once", len(calls) == 1)
+        check("ambient always requests looping", calls[0]["loop"] is True)
         eng.step(cfg, None, now=t0)
-        check("random not replayed immediately", counts["play"] == 1)
-        eng.step(cfg, None, now=t0 + dt.timedelta(minutes=20))
-        check("random replays after the interval", counts["play"] == 2)
+        check("healthy loop is not restarted", len(calls) == 1)
+        old_current, old_health = sound.current_sound, sound.ambient_is_playing
+        try:
+            sound.current_sound = object()
+            sound.ambient_is_playing = lambda: False
+            eng.step(cfg, None, now=t0)
+            check("dropped ambient channel restarts", len(calls) == 2)
+        finally:
+            sound.current_sound = old_current
+            sound.ambient_is_playing = old_health
     finally:
         (sound.play_ambient, sound.stop_sound, sound.set_volume,
-         sound.pick_variant, theme.apply_theme_color,
+         sound.pick_base, theme.apply_theme_color,
          wallpaper.apply_weather_wallpaper) = saved
 
 
@@ -766,8 +1031,8 @@ def test_tasks():
               gui._task_when_str({"type": "daily", "time": "07:30"}) == "Every day · 07:30")
         check("once 'when' shows a date",
               "·" in gui._task_when_str({"type": "once", "datetime": "2026-08-01T09:00"}))
-        check("does shows weather target",
-              gui._task_does_str({"action": "set_weather", "action_value": "rain"}) == "Weather → rain")
+        check("chime does is friendly",
+              gui._task_does_str({"action": "chime"}) == "Play a chime")
         check("notify does is friendly",
               gui._task_does_str({"action": "notify"}) == "Notify me")
 
@@ -848,17 +1113,19 @@ def test_bugfixes():
         check("unpinned accent follows the weather",
               st2["color"] != [10, 20, 30] and st2["color_source"] == "computed")
 
-        # BUG: the master switch "did nothing". Off => engine applies nothing
-        # and silences sound.
+        # Select-all state must not gate independently selected features.
         counts.update(theme=0, wall=0, stop=0)
         cfg3 = config.default_config()
         cfg3["enabled"] = False
+        cfg3["features"].update({"dynamic_theme": False, "wallpaper": True,
+                                 "ambient_sound": False, "tasks": False})
         eng3 = engine.Engine()
         eng3._sound_on = True
         st3 = eng3.step(cfg3, None, now=at(12))
-        check("master off => not enabled", st3["enabled"] is False and "note" in st3)
-        check("master off applies no theme/wallpaper", counts["theme"] == 0 and counts["wall"] == 0)
-        check("master off stops sound", counts["stop"] >= 1)
+        check("individual wallpaper works with select-all off",
+              st3["enabled"] is True and counts["theme"] == 0
+              and counts["wall"] == 1)
+        check("individually disabled sound stops", counts["stop"] >= 1)
 
         # BUG: ambient wouldn't stop when the feature was turned off.
         counts.update(theme=0, wall=0, stop=0)
@@ -899,7 +1166,7 @@ def test_bugfixes():
         eng6 = engine.Engine()
         eng6._eased_rgb = (140.0, 118.0, 162.0)    # a stale "purple" mid-fade
         eng6._eased_at = at(12)
-        st6 = eng6.step(cfg6, None, now=at(12))     # dt≈0 => easing would barely move
+        eng6.step(cfg6, None, now=at(12))           # dt≈0 => easing would barely move
         # (no manual colour yet — establishes the eased baseline)
         cfg6["manual_theme_color"] = [0, 238, 0]    # user picks green
         st6b = eng6.step(cfg6, None, now=at(12))
@@ -955,59 +1222,42 @@ def test_city_change_refetch():
         weather.get_weather = o_get
 
 
-def test_task_recolors_now():
-    section("task changes the background promptly")
+def test_task_claims_once():
+    section("task reminders are claimed exactly once")
     import datetime as dt
-    o_notify, o_chime, o_save = engine.notify, sound.play_chime, config.save_config
-    engine.notify = lambda *a, **k: None
-    sound.play_chime = lambda *a, **k: None
-    config.save_config = lambda *a, **k: True   # never touch the real config file
-    try:
-        check("set_weather is a visual change",
-              engine._run_task_action({"action": "set_weather", "action_value": "storm"},
-                                      config.default_config()) is True)
-        check("set_theme is a visual change",
-              engine._run_task_action({"action": "set_theme", "action_value": "255,0,0"},
-                                      config.default_config()) is True)
-        check("notify is not a visual change",
-              engine._run_task_action({"action": "notify"}, {}) is False)
-    finally:
-        engine.notify, sound.play_chime, config.save_config = o_notify, o_chime, o_save
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "tasks.json")
+        first = tasks_mod.TaskStore(path)
+        now = dt.datetime.now().replace(second=0, microsecond=0)
+        first.add_task("Only once", type="once",
+                       datetime_str=(now - dt.timedelta(minutes=1)).isoformat())
+        stale = tasks_mod.TaskStore(path)
 
-    # A due weather task resets the wallpaper/theme guards so the new look
-    # applies at once instead of waiting out the redraw interval.
-    saved = (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
-             sound.play_ambient, sound.stop_sound, sound.set_volume,
-             sound.pick_base, weather.get_weather, config.save_config)
-    theme.apply_theme_color = lambda *a, **k: "t"
-    wallpaper.apply_weather_wallpaper = lambda *a, **k: True
-    sound.play_ambient = lambda *a, **k: None
-    sound.stop_sound = lambda *a, **k: None
-    sound.set_volume = lambda *a, **k: None
-    sound.pick_base = lambda *a, **k: "x"
-    config.save_config = lambda *a, **k: True         # keep the disk untouched
-    sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
-    ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
-    weather.get_weather = lambda *a, **k: {
-        "condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
-        "temperature": 15, "feels_like": 15, "humidity": 50, "uv_index": 3,
-        "uv_index_max": 5, "pressure": 1010, "rain": 0, "precip_chance": 0,
-        "wind_speed": 5, "wind_gust": 8, "wind_dir": 180, "cloud_cover": 10}
-    try:
-        with tempfile.TemporaryDirectory() as d:
-            store = tasks_mod.TaskStore(os.path.join(d, "tasks.json"))
-            t0 = dt.datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
-            store.add_task("Storm", type="once",
-                           datetime_str=(t0 - dt.timedelta(minutes=1)).isoformat(),
-                           action="set_weather", action_value="storm")
-            eng = engine.Engine()
-            eng.step(config.default_config(), store, now=t0)
-            check("wallpaper guard reset after task", eng._last_wall_at is None)
-            check("engine marked transitioning", eng.transitioning is True)
-    finally:
-        (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
-         sound.play_ambient, sound.stop_sound, sound.set_volume,
-         sound.pick_base, weather.get_weather, config.save_config) = saved
+        claimed = first.claim_due_tasks(now)
+        check("first store claims due reminder",
+              [t["title"] for t in claimed] == ["Only once"])
+        check("stale store cannot claim it again", stale.claim_due_tasks(now) == [])
+        check("claim persisted before action",
+              tasks_mod.TaskStore(path).due_tasks(now) == [])
+
+        first.add_task("Concurrent", type="once",
+                       datetime_str=(now - dt.timedelta(minutes=1)).isoformat())
+        import threading
+        barrier = threading.Barrier(2)
+        claims = []
+
+        def claim_at_once():
+            contender = tasks_mod.TaskStore(path)
+            barrier.wait()
+            claims.extend(contender.claim_due_tasks(now))
+
+        workers = [threading.Thread(target=claim_at_once) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        check("concurrent engines still fire once",
+              [task["title"] for task in claims] == ["Concurrent"])
 
 
 def test_sun_tracking():
@@ -1015,7 +1265,8 @@ def test_sun_tracking():
     import datetime as dt
     captured = {}
     o_wall, o_get = wallpaper.apply_weather_wallpaper, weather.get_weather
-    wallpaper.apply_weather_wallpaper = lambda *a, **k: captured.update(sun=k.get("sun")) or True
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: captured.update(
+        sun=k.get("sun"), patterns=k.get("patterns"), condition=k.get("condition")) or True
     sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
     ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
     weather.get_weather = lambda *a, **k: {
@@ -1028,16 +1279,52 @@ def test_sun_tracking():
         # wallpaper — so the sun follows the real clock, not a stale value.
         cfg = config.default_config()
         cfg["features"]["dynamic_theme"] = False
+        cfg["wallpaper_dynamic"] = False
         engine.Engine().step(cfg, None, now=dt.datetime.combine(dt.date.today(), dt.time(13, 0)))
         expect = theme.celestial_fraction(None, sr, ss,
                                           dt.datetime.combine(dt.date.today(), dt.time(13, 0)))
         check("step forwards the live sun to the wallpaper",
               captured.get("sun") is not None and abs(captured["sun"] - expect) < 0.02)
+        check("static wallpaper keeps celestial patterns",
+              captured.get("patterns") is True and captured.get("condition") == "clear")
 
         # Time passing moves the sun west (fixed times, clock-independent).
         s1 = theme.celestial_fraction(None, sr, ss, dt.datetime.combine(dt.date.today(), dt.time(10, 0)))
         s2 = theme.celestial_fraction(None, sr, ss, dt.datetime.combine(dt.date.today(), dt.time(14, 0)))
         check("sun advances with time", s2 > s1)
+    finally:
+        wallpaper.apply_weather_wallpaper, weather.get_weather = o_wall, o_get
+
+
+def test_wallpaper_patterns_reapply():
+    section("enabling wallpaper patterns redraws static celestial art")
+    import datetime as dt
+    calls = []
+    o_wall, o_get = wallpaper.apply_weather_wallpaper, weather.get_weather
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: calls.append(k) or True
+    sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
+    ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
+    weather.get_weather = lambda *a, **k: {
+        "condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
+        "temperature": 18, "feels_like": 18, "humidity": 50, "uv_index": 3,
+        "uv_index_max": 5, "pressure": 1010, "rain": 0, "precip_chance": 0,
+        "wind_speed": 5, "wind_gust": 8, "wind_dir": 180, "cloud_cover": 10}
+    try:
+        now = dt.datetime.combine(dt.date.today(), dt.time(13, 0))
+        cfg = config.default_config()
+        cfg["features"]["dynamic_theme"] = False
+        cfg["features"]["ambient_sound"] = False
+        cfg["wallpaper_dynamic"] = False
+        cfg["wallpaper_patterns"] = False
+        eng = engine.Engine()
+        eng.step(cfg, None, now=now)
+
+        cfg["wallpaper_patterns"] = True
+        eng.invalidate_visuals()
+        eng.step(cfg, None, now=now)
+        check("patterns change rebuilds wallpaper", len(calls) == 2)
+        check("rebuilt wallpaper includes celestial patterns",
+              calls[-1]["patterns"] is True and calls[-1]["sun"] is not None)
     finally:
         wallpaper.apply_weather_wallpaper, weather.get_weather = o_wall, o_get
 
@@ -1133,6 +1420,78 @@ def test_wallpaper_agent_warmup():
          wallpaper._applied_path, wallpaper._agent_warmed) = o
 
 
+def test_wallpaper_restore_on_disable():
+    section("disabling weather wallpaper restores the original desktop")
+    import datetime as dt
+    saved = (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+             wallpaper.restore_original, wallpaper.is_showing_ours,
+             sound.play_ambient, sound.stop_sound, sound.set_volume,
+             sound.pick_base, weather.get_weather)
+    counts = {"apply": 0, "restore": 0}
+    theme.apply_theme_color = lambda *a, **k: "t"
+    wallpaper.apply_weather_wallpaper = lambda *a, **k: counts.__setitem__("apply", counts["apply"] + 1) or True
+    wallpaper.restore_original = lambda *a, **k: counts.__setitem__("restore", counts["restore"] + 1) or True
+    wallpaper.is_showing_ours = lambda: True
+    sound.play_ambient = lambda *a, **k: None
+    sound.stop_sound = lambda *a, **k: None
+    sound.set_volume = lambda *a, **k: None
+    sound.pick_base = lambda *a, **k: "x"
+    sr = dt.datetime.combine(dt.date.today(), dt.time(6, 0))
+    ss = dt.datetime.combine(dt.date.today(), dt.time(20, 0))
+    weather.get_weather = lambda *a, **k: {
+        "condition": "clear", "sunrise": sr, "sunset": ss, "is_day": True,
+        "temperature": 15, "feels_like": 15, "humidity": 50, "uv_index": 3,
+        "uv_index_max": 5, "pressure": 1010, "rain": 0, "precip_chance": 0,
+        "wind_speed": 5, "wind_gust": 8, "wind_dir": 180, "cloud_cover": 10}
+    try:
+        now = dt.datetime.combine(dt.date.today(), dt.time(12, 0))
+        cfg = config.default_config()
+        cfg["features"]["ambient_sound"] = False
+        eng = engine.Engine()
+        eng.step(cfg, None, now=now)
+        check("wallpaper set while enabled", counts["apply"] == 1 and counts["restore"] == 0)
+
+        cfg["features"]["wallpaper"] = False        # user unticks it
+        eng.step(cfg, None, now=now)
+        check("restores original once on disable", counts["restore"] == 1)
+        eng.step(cfg, None, now=now)
+        check("does not keep restoring while off", counts["restore"] == 1)
+
+        cfg["features"]["wallpaper"] = True          # re-enable...
+        eng.step(cfg, None, now=now)
+        cfg["features"]["wallpaper"] = False         # ...and disable again
+        eng.step(cfg, None, now=now)
+        check("restores again after re-enable then disable", counts["restore"] == 2)
+
+        # Clicking "Enable everything" off clears all child features. Its
+        # saved select-all state must not bypass wallpaper restoration.
+        counts["restore"] = 0
+        cfg_all = config.default_config()
+        cfg_all["features"]["ambient_sound"] = False
+        eng_all = engine.Engine()
+        eng_all.step(cfg_all, None, now=now)
+        cfg_all["enabled"] = False
+        for feature in cfg_all["features"]:
+            cfg_all["features"][feature] = False
+        eng_all.step(cfg_all, None, now=now)
+        check("select-all off restores original wallpaper",
+              counts["restore"] == 1)
+
+        # One-shot tick(): feature off + a weather wallpaper still showing.
+        counts["restore"] = 0
+        cfg2 = config.default_config()
+        cfg2["enabled"] = False
+        cfg2["features"]["wallpaper"] = False
+        cfg2["features"]["ambient_sound"] = False
+        engine.tick(cfg2, None, now=now)
+        check("tick restores when off + showing ours", counts["restore"] == 1)
+    finally:
+        (theme.apply_theme_color, wallpaper.apply_weather_wallpaper,
+         wallpaper.restore_original, wallpaper.is_showing_ours,
+         sound.play_ambient, sound.stop_sound, sound.set_volume,
+         sound.pick_base, weather.get_weather) = saved
+
+
 # ---------------------------------------------------------
 # engine
 # ---------------------------------------------------------
@@ -1170,15 +1529,22 @@ def test_engine():
             check("wallpaper skipped when off", applied["wallpaper"] == 0)
             check("sound stopped when off", applied["stop"] >= 1)
 
-            # master off
+            # Select-all state does not gate remaining individual features.
             cfg["enabled"] = False
             st = engine.tick(cfg, store)
-            check("master off => not enabled", st["enabled"] is False)
+            check("select-all off keeps selected features running",
+                  st["enabled"] is True)
+            for feature in cfg["features"]:
+                cfg["features"][feature] = False
+            st = engine.tick(cfg, store)
+            check("all individual features off => not enabled",
+                  st["enabled"] is False)
 
             # task firing
             cfg["enabled"] = True
             cfg["features"]["wallpaper"] = True
             cfg["features"]["ambient_sound"] = True
+            cfg["features"]["tasks"] = True
             past_min = (datetime.datetime.now() - datetime.timedelta(minutes=1)).strftime("%H:%M")
             store.add_task("Chime me", type="daily", time=past_min, action="chime")
             st = engine.tick(cfg, store)
@@ -1235,6 +1601,162 @@ def test_gui_helper():
     cfg_keep["location"] = {"lat": 1.0, "lon": 2.0, "name": "Nowhere"}
     out4 = gui.apply_values_to_config(cfg_keep, {**base_vals, "city": "Atlantis"})
     check("unknown city keeps existing location", out4["location"]["name"] == "Nowhere")
+
+    # Main window has no manual Start/Apply/Save controls and every setting
+    # that previously depended on them registers a live-apply trace.
+    import inspect
+    ui_source = inspect.getsource(gui.App._build_ui)
+    check("main window has no Start button", 'text="▶  Start"' not in ui_source)
+    check("main window has no Save button", 'text="Save"' not in ui_source)
+    check("main window has no Apply button", 'text="Apply"' not in ui_source)
+
+    class FakeVar:
+        def __init__(self):
+            self.traces = []
+
+        def trace_add(self, mode, callback):
+            self.traces.append((mode, callback))
+
+    fake = object.__new__(gui.App)
+    names = ("v_theme", "v_wallpaper", "v_tint", "v_wpdynamic", "v_wpshift",
+             "v_wppatterns", "v_wpwarmth", "v_duck", "v_tick",
+             "v_weatherrefresh", "v_smooth", "v_season",
+             "v_multimon")
+    for name in names:
+        setattr(fake, name, FakeVar())
+    gui.App._bind_auto_apply(fake)
+    check("all formerly manual settings auto-apply",
+          all(getattr(fake, name).traces for name in names))
+
+    feature_vars = [FakeVar() for _ in range(4)]
+    for var in feature_vars:
+        var.value = False
+        var.set = lambda value, target=var: setattr(target, "value", value)
+    gui._sync_feature_vars(True, feature_vars)
+    check("select-all on checks every feature", all(v.value is True for v in feature_vars))
+    gui._sync_feature_vars(False, feature_vars)
+    check("select-all off unchecks every feature", all(v.value is False for v in feature_vars))
+    select_cfg = config.default_config()
+    check("select-all startup state on when all features selected",
+          gui._select_all_state(select_cfg) is True)
+    select_cfg["features"]["ambient_sound"] = False
+    check("select-all startup state off when one feature is off",
+          gui._select_all_state(select_cfg) is False)
+    select_cfg["features"]["ambient_sound"] = True
+    select_cfg["enabled"] = False
+    check("saved select-all off stays off when children are on",
+          gui._select_all_state(select_cfg) is False)
+
+    check("week button accumulates from field date",
+          gui._shift_iso_date("2026-07-28", 7) == "2026-08-04")
+    check("invalid task date falls back to today",
+          gui._shift_iso_date("bad", 7, datetime.date(2026, 7, 21)) == "2026-07-28")
+    check("dashboard uses compact weather-time format",
+          gui._weather_summary("rain", "afternoon") == "Rain  ·  afternoon")
+    check("dashboard compact format marks manual weather",
+          gui._weather_summary("rain", "afternoon", manual=True) ==
+          "Rain  ·  afternoon  ·  manual")
+    live = {
+        "condition": "clear",
+        "sunrise": datetime.datetime(2026, 7, 21, 6),
+        "sunset": datetime.datetime(2026, 7, 21, 20),
+        "is_day": True,
+        "source": "test",
+    }
+    manual_cfg = config.default_config()
+    manual_cfg["manual_weather"] = "rain"
+    manual_cfg["manual_time"] = "night"
+    card = gui._weather_card_data(
+        live, manual_cfg, datetime.datetime(2026, 7, 21, 23))
+    check("manual changer reapplies cached live weather",
+          card["condition"] == "rain"
+          and card["condition_source"] == "manual"
+          and card["phase"] == "night"
+          and card["is_night"] is True)
+    check("long timer labels select a smaller fitting font",
+          gui._largest_fitting_font(
+              "abcdefghij", 300,
+              lambda value, size: len(value) * size) == 30)
+
+    class ToggleVar:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    toggle_app = object.__new__(gui.App)
+    toggle_app.v_enabled = ToggleVar(False)
+    toggle_app.v_theme = ToggleVar(True)
+    toggle_app.v_wallpaper = ToggleVar(True)
+    toggle_app.v_sound = ToggleVar(True)
+    toggle_app.v_tasks = ToggleVar(True)
+    applied = []
+    toggle_app._apply_live = applied.append
+    old_stop = sound.stop_sound
+    sound.stop_sound = lambda: None
+    try:
+        gui.App.on_master_toggle(toggle_app)
+        check("select-all off clears every feature and applies",
+              all(not var.get() for var in
+                  (toggle_app.v_theme, toggle_app.v_wallpaper,
+                   toggle_app.v_sound, toggle_app.v_tasks))
+              and applied == ["All features off"])
+        toggle_app.v_wallpaper.set(True)
+        gui.App.on_feature_toggle(toggle_app, "wallpaper")
+        check("child feature remains usable with select-all off",
+              toggle_app.v_enabled.get() is False
+              and toggle_app.v_wallpaper.get() is True
+              and applied[-1] == "Feature updated")
+    finally:
+        sound.stop_sound = old_stop
+
+    shell_source = inspect.getsource(gui.App._build_ui)
+    settings_source = inspect.getsource(gui.App._tab_settings)
+    check("main tab is named Settings", 'text="  Settings  "' in shell_source)
+    check("city helper text removed", "Pick your city for live weather" not in settings_source)
+    check("random playback controls removed", "Playback" not in settings_source)
+    dashboard_source = inspect.getsource(gui.App._tab_dashboard)
+    check("weather refresh button removed",
+          "Refresh weather" not in dashboard_source)
+    check("accent control explains its OS effect",
+          "nearest named macOS accent" in dashboard_source)
+    check("task reminders have an independent switch",
+          "Task reminders" in dashboard_source)
+    check("celestial wallpaper setting is explicit",
+          "Sun, moon, stars & weather patterns" in settings_source)
+
+    class FakeRoot:
+        def __init__(self):
+            self.scheduled = []
+            self.cancelled = []
+
+        def after(self, delay, callback):
+            self.scheduled.append((delay, callback))
+            return len(self.scheduled)
+
+        def after_cancel(self, job):
+            self.cancelled.append(job)
+
+    weather_app = object.__new__(gui.App)
+    weather_app.root = FakeRoot()
+    weather_app.cfg = {"weather_refresh_seconds": 45}
+    weather_app._weather_refresh_job = None
+    weather_app._weather_refresh_seconds = None
+    gui.App._schedule_weather_refresh(weather_app)
+    check("weather card schedules automatic refresh",
+          weather_app.root.scheduled[0][0] == 45000)
+    gui.App._schedule_weather_refresh(weather_app)
+    check("same weather interval is not scheduled twice",
+          len(weather_app.root.scheduled) == 1)
+    weather_app.cfg["weather_refresh_seconds"] = 90
+    gui.App._schedule_weather_refresh(weather_app)
+    check("weather interval change reschedules automatically",
+          weather_app.root.cancelled == [1]
+          and weather_app.root.scheduled[-1][0] == 90000)
 
 
 def test_cities():
@@ -1374,6 +1896,318 @@ def test_engine_guards():
          weather.get_weather) = saved
 
 
+# ---------------------------------------------------------
+# activity (idle detection)
+# ---------------------------------------------------------
+def test_activity():
+    section("activity — idle detection")
+    import sys as _sys
+    import subprocess as _sp
+    import activity
+
+    # The public entry always returns a float, whatever the platform.
+    idle = activity.get_idle_time()
+    check("get_idle_time returns a float", isinstance(idle, float))
+    check("idle time non-negative", idle >= 0.0)
+
+    # Unsupported platform degrades to 0.0 (never crashes / never None).
+    o_plat = _sys.platform
+    _sys.platform = "linux"
+    try:
+        check("unsupported platform => 0.0", activity.get_idle_time() == 0.0)
+    finally:
+        _sys.platform = o_plat
+
+    # Dispatch: each platform routes to its own implementation.
+    o_win, o_mac = activity._get_idle_windows, activity._get_idle_macos
+    activity._get_idle_windows = lambda: 11.0
+    activity._get_idle_macos = lambda: 22.0
+    try:
+        _sys.platform = "win32"
+        check("win32 routes to windows impl", activity.get_idle_time() == 11.0)
+        _sys.platform = "darwin"
+        check("darwin routes to macos impl", activity.get_idle_time() == 22.0)
+    finally:
+        activity._get_idle_windows, activity._get_idle_macos = o_win, o_mac
+        _sys.platform = o_plat
+
+    # macOS impl parses ioreg's HIDIdleTime (nanoseconds -> seconds).
+    o_run = _sp.run
+    try:
+        class _R:
+            stdout = ('  |   "HIDIdleTime" = 4500000000\n'
+                      '  |   "HIDIdleCount" = 3\n')
+        _sp.run = lambda *a, **k: _R()
+        check("macos parses HIDIdleTime seconds",
+              abs(activity._get_idle_macos() - 4.5) < 1e-9)
+
+        class _R2:
+            stdout = "no idle field here\n"
+        _sp.run = lambda *a, **k: _R2()
+        check("macos missing field => 0.0", activity._get_idle_macos() == 0.0)
+
+        def _boom(*a, **k):
+            raise OSError("ioreg unavailable")
+        _sp.run = _boom
+        check("macos subprocess error => 0.0", activity._get_idle_macos() == 0.0)
+    finally:
+        _sp.run = o_run
+
+    # Windows impl swallows errors (ctypes.windll is absent off-Windows).
+    if _sys.platform != "win32":
+        check("windows impl error-safe off Windows",
+              activity._get_idle_windows() == 0.0)
+
+
+# ---------------------------------------------------------
+# audiocheck (other-audio detection)
+# ---------------------------------------------------------
+def test_audiocheck():
+    section("audiocheck — external audio detection")
+    import sys as _sys
+    import subprocess as _sp
+    import audiocheck
+
+    o_plat = _sys.platform
+
+    # Unknown platform can't tell -> None (tri-state, not False).
+    _sys.platform = "linux"
+    try:
+        check("unknown platform => None", audiocheck.external_audio_active() is None)
+    finally:
+        _sys.platform = o_plat
+
+    # Dispatch to the per-platform probe.
+    o_mac, o_win = audiocheck._macos_playing, audiocheck._windows_playing
+    audiocheck._macos_playing = lambda: True
+    audiocheck._windows_playing = lambda: False
+    try:
+        _sys.platform = "darwin"
+        check("darwin routes to macos probe", audiocheck.external_audio_active() is True)
+        _sys.platform = "win32"
+        check("win32 routes to windows probe", audiocheck.external_audio_active() is False)
+        # A probe blowing up is caught and reported as unknown (None).
+        def _boom():
+            raise RuntimeError("probe failed")
+        audiocheck._macos_playing = _boom
+        _sys.platform = "darwin"
+        check("probe error => None", audiocheck.external_audio_active() is None)
+    finally:
+        audiocheck._macos_playing, audiocheck._windows_playing = o_mac, o_win
+        _sys.platform = o_plat
+
+    # macOS CoreAudio probe detects any other process with active output.
+    o_core = audiocheck._macos_coreaudio_processes
+    o_is_flow = audiocheck._is_flow_process
+    try:
+        own = os.getpid()
+        peer = own + 1
+        external = own + 2
+        audiocheck._is_flow_process = lambda pid: pid in (own, peer)
+        audiocheck._macos_coreaudio_processes = lambda: [(own, True)]
+        check("own macOS audio is ignored", audiocheck._macos_playing() is False)
+        audiocheck._macos_coreaudio_processes = lambda: [(peer, True)]
+        check("peer Flow audio is ignored", audiocheck._macos_playing() is False)
+        audiocheck._macos_coreaudio_processes = lambda: [(own, True), (external, True)]
+        check("other macOS output is detected", audiocheck._macos_playing() is True)
+        audiocheck._macos_coreaudio_processes = lambda: [(external, False)]
+        check("idle macOS audio process is ignored", audiocheck._macos_playing() is False)
+    finally:
+        audiocheck._macos_coreaudio_processes = o_core
+        audiocheck._is_flow_process = o_is_flow
+
+    # A live PID registration is visible to other Flow process probes and
+    # disappears when its process lease is released.
+    registered_pid = os.getpid() + 1000000
+    registration = processlock.ProcessFileLock(
+        audiocheck._flow_process_path(registered_pid))
+    try:
+        check("Flow process registration acquires", registration.acquire() is True)
+        check("registered Flow process is recognised",
+              audiocheck._is_flow_process(registered_pid) is True)
+    finally:
+        registration.release()
+    check("released Flow process registration expires",
+          audiocheck._is_flow_process(registered_pid) is False)
+
+    # Older-macOS fallback: not-running app => not playing; running + playing.
+    o_run = _sp.run
+    o_core = audiocheck._macos_coreaudio_processes
+    try:
+        audiocheck._macos_coreaudio_processes = lambda: None
+        class _R:
+            def __init__(self, out):
+                self.stdout = out
+        _sp.run = lambda *a, **k: _R("false")
+        check("no media app running => False", audiocheck._macos_playing() is False)
+
+        state = {"n": 0}
+
+        def _seq(*a, **k):
+            # First call: "is it running?"; second: "player state".
+            state["n"] += 1
+            return _R("true") if state["n"] % 2 == 1 else _R("playing")
+        _sp.run = _seq
+        check("fallback running + playing => True", audiocheck._macos_playing() is True)
+    finally:
+        _sp.run = o_run
+        audiocheck._macos_coreaudio_processes = o_core
+
+    # Windows probe returns None when pycaw isn't installed (import fails).
+    if _sys.platform != "win32":
+        check("windows probe => None without pycaw",
+              audiocheck._windows_playing() is None)
+
+
+# ---------------------------------------------------------
+# engine.notify (desktop notification, no OS mutation)
+# ---------------------------------------------------------
+def test_notify():
+    section("notify — cross-platform, error-safe")
+    import sys as _sys
+    import subprocess as _sp
+
+    o_plat = _sys.platform
+    o_popen = _sp.Popen
+    seen = {}
+
+    def _capture(cmd, *a, **k):
+        seen["cmd"] = cmd
+        class _R:
+            stdout = ""
+            returncode = 0
+        return _R()
+
+    try:
+        _sp.Popen = _capture
+        _sys.platform = "darwin"
+        engine.notify("Flow", "Stand up")
+        check("macOS uses osascript", seen["cmd"][0] == "osascript")
+        check("macOS command carries the message",
+              any("Stand up" in str(part) for part in seen["cmd"]))
+
+        _sys.platform = "win32"
+        engine.notify("Flow", "Break time")
+        check("Windows uses powershell", seen["cmd"][0] == "powershell")
+
+        # Unsupported platform just logs (no subprocess call) and never raises.
+        seen.clear()
+        _sys.platform = "linux"
+        engine.notify("Flow", "hello")
+        check("unsupported platform makes no subprocess call", "cmd" not in seen)
+
+        # A failing subprocess is swallowed, not propagated.
+        def _boom(*a, **k):
+            raise OSError("no osascript")
+        _sp.Popen = _boom
+        _sys.platform = "darwin"
+        engine.notify("Flow", "test")   # must not raise
+        check("notify swallows subprocess errors", True)
+    finally:
+        _sp.Popen = o_popen
+        _sys.platform = o_plat
+
+
+# ---------------------------------------------------------
+# gui display helpers (pure formatting — no window)
+# ---------------------------------------------------------
+def test_gui_display_helpers():
+    section("gui display helpers")
+    import gui
+
+    # Hex + luminance.
+    check("hex formats rgb", gui._hex((40, 80, 180)) == "#2850b4")
+    check("hex clamps out-of-range", gui._hex((-5, 300, 128)) == "#00ff80")
+    check("luminance white ~1", abs(gui._lum((255, 255, 255)) - 1.0) < 1e-9)
+    check("luminance black 0", gui._lum((0, 0, 0)) == 0.0)
+    check("green brighter than blue (luma)", gui._lum((0, 255, 0)) > gui._lum((0, 0, 255)))
+
+    # Palette: a very dark accent is lifted so it stays a usable button colour,
+    # and the foreground flips for contrast.
+    pal = gui.build_palette(True, (5, 5, 5))
+    check("palette has accent + fg", "ACCENT" in pal and "ACCENT_FG" in pal)
+    check("dark accent lifted (not near-black)", pal["ACCENT"] != gui._hex((5, 5, 5)))
+    light = gui.build_palette(False, (250, 250, 120))
+    check("bright accent => dark foreground", light["ACCENT_FG"] == "#0d1117")
+
+    # Weather icon selection (day/night aware).
+    check("storm icon", gui._weather_icon("storm", False) == "⛈️")
+    check("rain icon", gui._weather_icon("rain", True) == "🌧️")
+    check("cloud icon", gui._weather_icon("cloud", False) == "⛅")
+    check("cloudnight still a cloud icon", gui._weather_icon("cloudnight", True) == "⛅")
+    check("clear day => sun", gui._weather_icon("clear", False) == "☀️")
+    check("clear night => moon", gui._weather_icon("clear", True) == "🌙")
+    check("night => moon", gui._weather_icon("night", True) == "🌙")
+    check("unknown => fallback", gui._weather_icon("fog", False) == "🌡️")
+
+    # Temperature formatting.
+    check("temp rounds to whole degrees", gui._fmt_temp(20.4) == "20°C")
+    check("temp None => dash", gui._fmt_temp(None) == "—")
+    check("temp non-numeric => dash", gui._fmt_temp("hot") == "—")
+
+    # UV label with risk band.
+    check("uv low", gui._uv_label(1) == "UV 1 (low)")
+    check("uv moderate", gui._uv_label(5) == "UV 5 (moderate)")
+    check("uv high", gui._uv_label(7) == "UV 7 (high)")
+    check("uv very high", gui._uv_label(9) == "UV 9 (very high)")
+    check("uv extreme", gui._uv_label(12) == "UV 12 (extreme)")
+    check("uv None => None", gui._uv_label(None) is None)
+    check("uv bad => None", gui._uv_label("x") is None)
+
+    # Live-data detail line.
+    line = gui._fmt_details({
+        "feels_like": 18.6, "humidity": 55, "uv_index": 4,
+        "wind_speed": 12, "wind_gust": 20, "precip_chance": 10, "pressure": 1013,
+    })
+    for want in ["Feels 19°", "Humidity 55%", "UV 4", "Wind 12 km/h",
+                 "gust 20", "Rain 10%", "1013 hPa"]:
+        check(f"details contains {want!r}", want in line)
+    check("empty details => placeholder",
+          gui._fmt_details({}) == "live data unavailable")
+    check("uv_index_max used when uv_index missing",
+          "UV 6" in gui._fmt_details({"uv_index_max": 6}))
+
+
+# ---------------------------------------------------------
+# engine pure helpers
+# ---------------------------------------------------------
+def test_engine_helpers():
+    section("engine pure helpers")
+    import datetime as dt
+
+    # Colour delta is the max per-channel difference.
+    check("color delta max channel", engine._color_delta((10, 20, 30), (10, 25, 90)) == 60)
+    check("color delta zero when equal", engine._color_delta((1, 2, 3), (1, 2, 3)) == 0)
+
+    # _style_color: none profile + no accessibility is an int-tuple identity.
+    base = config.default_config()
+    base["active_profile"] = "none"
+    base["accessibility_mode"] = "none"
+    styled = engine._style_color((60, 120, 200), base)
+    check("style none => unchanged", styled == (60, 120, 200))
+    check("style returns int tuple", all(isinstance(c, int) for c in styled))
+
+    # High-contrast accessibility bends the colour to a bold one.
+    hc = config.default_config()
+    hc["active_profile"] = "none"
+    hc["accessibility_mode"] = "high_contrast"
+    check("style high-contrast intensifies",
+          _chroma(engine._style_color((90, 120, 170), hc)) > _chroma((90, 120, 170)))
+
+    # _season_now: off => None; on (south, July) => winter.
+    off = config.default_config()
+    off["seasonal_themes"] = False
+    check("season off => None", engine._season_now(off, dt.datetime(2026, 7, 15, 12)) is None)
+    on = config.default_config()
+    on["seasonal_themes"] = True
+    on["hemisphere"] = "south"
+    check("season on (south July) => winter",
+          engine._season_now(on, dt.datetime(2026, 7, 15, 12)) == "winter")
+    on["hemisphere"] = "north"
+    check("season on (north July) => summer",
+          engine._season_now(on, dt.datetime(2026, 7, 15, 12)) == "summer")
+
+
 def main():
     test_config()
     test_weather()
@@ -1385,7 +2219,9 @@ def main():
     test_high_contrast()
     test_wallpaper()
     test_wallpaper_patterns()
+    test_wallpaper_original_archive()
     test_sound()
+    test_process_coordination()
     test_sound_variants_and_modes()
     test_music()
     test_duck_other_audio()
@@ -1394,11 +2230,13 @@ def main():
     test_autostart()
     test_bugfixes()
     test_city_change_refetch()
-    test_task_recolors_now()
+    test_task_claims_once()
     test_sun_tracking()
+    test_wallpaper_patterns_reapply()
     test_wallpaper_no_revert()
     test_wallpaper_force_refresh()
     test_wallpaper_agent_warmup()
+    test_wallpaper_restore_on_disable()
     test_engine()
     test_pomodoro()
     test_clocks()
@@ -1406,6 +2244,11 @@ def main():
     test_engine_guards()
     test_gui_helper()
     test_cities()
+    test_activity()
+    test_audiocheck()
+    test_notify()
+    test_gui_display_helpers()
+    test_engine_helpers()
     print(f"\n{'='*40}\nRESULT: {_passed} passed, {_failed} failed")
     return 1 if _failed else 0
 

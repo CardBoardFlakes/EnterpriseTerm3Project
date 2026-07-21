@@ -10,7 +10,6 @@ GUI; ``run_forever`` does the same for the headless ``--background`` mode.
 import os
 import sys
 import time
-import random
 import threading
 import subprocess
 import datetime
@@ -23,6 +22,7 @@ import sound
 import music
 import profiles
 import audiocheck
+import processlock
 import tasks as tasks_mod
 
 
@@ -31,19 +31,28 @@ import tasks as tasks_mod
 # ---------------------------------------------------------
 
 def notify(title: str, message: str):
+    """Show a desktop pop-up for a fired reminder.
+
+    Launched non-blocking (Popen) so a fired reminder never stalls the engine
+    tick. On macOS we use ``display dialog`` rather than ``display
+    notification`` — the latter is silently swallowed when the running process
+    has no notification permission, which is why reminders never appeared; a
+    dialog always pops up and auto-dismisses via ``giving up after``.
+    """
     try:
         if sys.platform == "darwin":
-            subprocess.run(
-                ["osascript", "-e",
-                 f'display notification "{message}" with title "{title}"'],
-                capture_output=True, text=True, timeout=5,
-            )
+            safe_msg = message.replace("\\", "").replace('"', "'")
+            safe_title = title.replace("\\", "").replace('"', "'")
+            script = (f'display dialog "{safe_msg}" with title "{safe_title}" '
+                      f'buttons {{"OK"}} default button "OK" giving up after 20')
+            subprocess.Popen(["osascript", "-e", script],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif sys.platform == "win32":
             ps = (f'[void][System.Reflection.Assembly]::LoadWithPartialName('
                   f'"System.Windows.Forms");'
                   f'[System.Windows.Forms.MessageBox]::Show("{message}","{title}")')
-            subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                           capture_output=True, text=True, timeout=10)
+            subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             print(f"[notify] {title}: {message}")
     except Exception as e:
@@ -54,34 +63,15 @@ def notify(title: str, message: str):
 # Task actions
 # ---------------------------------------------------------
 
-def _run_task_action(task: dict, cfg: dict) -> bool:
-    """Run a task's action. Returns True if it changed the *look* (so the
-    engine can re-apply the theme/wallpaper right away)."""
+def _run_task_action(task: dict, cfg: dict):
+    """Run a task's action — either pop up a notification or play a chime."""
     action = task.get("action", "notify")
-    value = task.get("action_value", "")
     title = task.get("title", "Task")
 
-    if action == "notify":
-        notify("Flow", title)
-    elif action == "chime":
+    if action == "chime":
         sound.play_chime()
-    elif action == "set_weather":
-        if value in weather.CONDITIONS or value == "auto":
-            cfg["manual_weather"] = value
-            config.save_config(cfg)
-            print(f"[engine] Task {title!r} set manual_weather={value}")
-            return True
-    elif action == "set_theme":
-        try:
-            rgb = [int(x) for x in str(value).split(",")]
-            if len(rgb) == 3:
-                cfg["manual_theme_color"] = rgb
-                config.save_config(cfg)
-                print(f"[engine] Task {title!r} set manual_theme_color={rgb}")
-                return True
-        except ValueError:
-            print(f"[engine] Task {title!r} bad set_theme value: {value!r}")
-    return False
+    else:  # "notify" (and any legacy action) shows a pop-up
+        notify("Flow", title)
 
 
 # ---------------------------------------------------------
@@ -92,17 +82,14 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
          now: datetime.datetime = None) -> dict:
     """Run one full evaluation cycle. Returns a status dict for display."""
     now = now or datetime.datetime.now()
+    any_enabled = any(config.feature_enabled(cfg, key)
+                      for key in config.FEATURE_KEYS)
     status = {
         "time": now.isoformat(timespec="seconds"),
-        "enabled": bool(cfg.get("enabled", True)),
+        "enabled": any_enabled,
         "applied": [],
         "fired_tasks": [],
     }
-
-    if not cfg.get("enabled", True):
-        sound.stop_sound()
-        status["note"] = "master switch off"
-        return status
 
     cfg = profiles.overlay_config(cfg, cfg.get("active_profile"))
     status["profile"] = (cfg.get("active_profile") or "none")
@@ -166,29 +153,29 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
                 patterns=patterns, warmth=warmth, sun=sun,
                 multi=bool(cfg.get("multi_monitor", True))):
             status["applied"].append("wallpaper")
-    else:
-        print("[wallpaper] feature is OFF — tick 'Weather wallpaper' on the "
-              "Dashboard to change the desktop background.")
+    elif wallpaper.is_showing_ours():
+        # Feature off but a weather wallpaper is still showing — put the user's
+        # real desktop back so it isn't left themed.
+        if wallpaper.restore_original(multi=bool(cfg.get("multi_monitor", True))):
+            status["applied"].append("wallpaper restored")
 
     # --- Ambient sound -------------------------------------------------
     if config.feature_enabled(cfg, "ambient_sound") and other_audio_playing(cfg):
         sound.stop_sound()
         status["note"] = "ambient paused — other audio playing"
     elif config.feature_enabled(cfg, "ambient_sound"):
-        loop = (cfg.get("sound_mode") or "loop").lower() != "random"
         base = sound.ambient_base(condition, is_night, eff.get("wind_speed") or 0)
         path = sound.pick_base(base)
         sound.play_ambient(condition, is_night, cfg.get("sound_volume", 25),
-                           path=path, loop=loop)
+                           path=path, loop=True)
         status["applied"].append(f"sound: {os.path.basename(path)}")
     else:
         sound.stop_sound()
 
     # --- Tasks & schedules --------------------------------------------
     if config.feature_enabled(cfg, "tasks") and store is not None:
-        for task in store.due_tasks(now):
+        for task in store.claim_due_tasks(now):
             _run_task_action(task, cfg)
-            store.mark_fired(task, now)
             status["fired_tasks"].append(task.get("title", task.get("id")))
 
     return status
@@ -240,7 +227,7 @@ def other_audio_playing(cfg):
     apps (Spotify, etc.) only pause it when ``pause_when_other_audio`` is on.
     """
     try:
-        if music.is_playing():          # our music always wins over ambience
+        if music.is_playing_anywhere():  # our music always wins over ambience
             return True
     except Exception:
         pass
@@ -259,6 +246,56 @@ def _pattern_condition(condition, is_night):
     if is_night and not any(k in c for k in ("rain", "storm")):
         return "cloudnight" if "cloud" in c else "night"
     return condition
+
+
+def _engine_poll_interval(cfg, eng, tick_interval):
+    """Return cadence needed for active visual or audio monitoring."""
+    if eng.transitioning:
+        return 0.5
+    monitor_audio = config.feature_enabled(cfg, "ambient_sound") and (
+        eng._sound_on or eng._sound_waiting_for_priority
+        or cfg.get("pause_when_other_audio", False))
+    return min(tick_interval, 5) if monitor_audio else tick_interval
+
+
+def _engine_wake_path(config_path):
+    return processlock.path("engine-wake", config_path)
+
+
+def _signal_engine_wake(config_path=config.CONFIG_FILE):
+    wake_path = _engine_wake_path(config_path)
+    try:
+        with open(wake_path, "a+b"):
+            pass
+        os.utime(wake_path, None)
+    except OSError:
+        pass
+
+
+def _engine_wake_stamp(config_path=config.CONFIG_FILE):
+    try:
+        return os.stat(_engine_wake_path(config_path)).st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _new_engine_lock(config_path):
+    return processlock.ProcessFileLock(
+        processlock.path("engine", config_path))
+
+
+def _new_gui_presence(config_path=config.CONFIG_FILE):
+    return processlock.ProcessPresence("gui", config_path)
+
+
+def _background_config(cfg, gui_open):
+    """Keep headless features running while making ambience window-bound."""
+    if gui_open:
+        return cfg
+    background = dict(cfg)
+    background["features"] = dict(cfg.get("features", {}))
+    background["features"]["ambient_sound"] = False
+    return background
 
 
 class Engine:
@@ -281,13 +318,22 @@ class Engine:
         self._last_sound = None        # ambient path last played
         self._sound_on = False
         self._sound_base = None        # ambient base currently selected
-        self._next_sound_at = None     # random mode: when to play next
+        self._sound_waiting_for_priority = False
         self._last_wall_key = None     # (drifted_rgb, brightness_bucket) last drawn
         self._last_wall_at = None
         self._last_sun = None          # sun/moon fraction last drawn (for tracking)
+        self._wall_active = False       # we've been setting the weather wallpaper
+        self._wall_off_handled = False  # restored the original since the feature went off
         self._eased_rgb = None         # displayed colour, eased toward target
         self._eased_at = None          # when the eased colour was last updated
         self.transitioning = False     # True while a colour cross-fade is in progress
+
+    def invalidate_visuals(self):
+        """Force the next step to re-apply theme and rebuild the wallpaper."""
+        self._last_theme = None
+        self._last_wall_key = None
+        self._last_wall_at = None
+        self._last_sun = None
 
     # --- weather (cached) ---------------------------------------------
     def _effective(self, cfg, now):
@@ -317,19 +363,14 @@ class Engine:
     # --- one cheap step -----------------------------------------------
     def step(self, cfg, store=None, now=None):
         now = now or datetime.datetime.now()
+        any_enabled = any(config.feature_enabled(cfg, key)
+                          for key in config.FEATURE_KEYS)
         status = {
             "time": now.isoformat(timespec="seconds"),
-            "enabled": bool(cfg.get("enabled", True)),
+            "enabled": any_enabled,
             "applied": [],
             "fired_tasks": [],
         }
-
-        if not cfg.get("enabled", True):
-            if self._sound_on:
-                sound.stop_sound()
-                self._sound_on = False
-            status["note"] = "master switch off"
-            return status
 
         # Active mood profile overlays sound volume + motion.
         cfg = profiles.overlay_config(cfg, cfg.get("active_profile"))
@@ -398,6 +439,8 @@ class Engine:
 
         # --- wallpaper: subtle drift, guarded by delta + interval ------
         if config.feature_enabled(cfg, "wallpaper"):
+            self._wall_active = True
+            self._wall_off_handled = False
             dynamic = bool(cfg.get("wallpaper_dynamic", True))
             shift = (cfg.get("wallpaper_shift_strength", 35) / 100.0) if dynamic else 0.0
             patterns = bool(cfg.get("wallpaper_patterns", True))
@@ -440,68 +483,64 @@ class Engine:
                     self._last_wall_at = now
                     self._last_sun = sun
                     status["applied"].append("wallpaper")
+        else:
+            # Weather wallpaper turned off: put the user's real desktop back so
+            # it doesn't stay themed. Do it once per off-period — including when
+            # a weather wallpaper is left over from a previous run — and never
+            # fight a wallpaper the user sets themselves afterwards.
+            if not self._wall_off_handled:
+                if self._wall_active or wallpaper.is_showing_ours():
+                    if wallpaper.restore_original(
+                            multi=bool(cfg.get("multi_monitor", True))):
+                        status["applied"].append("wallpaper restored")
+                    self._last_wall_key = None
+                    self._last_wall_at = None
+                self._wall_active = False
+                self._wall_off_handled = True
 
-        # --- sound: loop continuously, or play a random clip now and then --
+        # --- sound: continuous ambience, restarted if the audio device drops --
         if config.feature_enabled(cfg, "ambient_sound") and other_audio_playing(cfg):
             # Something else is playing — get out of the way, resume later.
+            self._sound_waiting_for_priority = True
             if self._sound_on:
                 sound.stop_sound()
                 self._sound_on = False
             self._sound_base = None
             status["note"] = "ambient paused — other audio playing"
         elif config.feature_enabled(cfg, "ambient_sound"):
+            self._sound_waiting_for_priority = False
             wind = eff.get("wind_speed") or 0
             base = sound.ambient_base(condition, is_night, wind)
             vol = cfg.get("sound_volume", 25)
-            mode = (cfg.get("sound_mode") or "loop").lower()
             base_changed = base != self._sound_base
-
-            if mode == "random":
-                # No continuous loop — stop any looping ambience first.
+            healthy = self._sound_on and (
+                sound.current_sound is None or sound.ambient_is_playing())
+            if base_changed or not healthy:
+                path = sound.pick_base(base)
+                started = sound.play_ambient(
+                    condition, is_night, vol, path=path, loop=True)
+                self._sound_on = started is not False
+                self._sound_base = base if self._sound_on else None
                 if self._sound_on:
-                    sound.stop_sound()
-                    self._sound_on = False
-                due = self._next_sound_at is None or now >= self._next_sound_at
-                if due or base_changed:
-                    path = sound.pick_base(base)
-                    sound.play_ambient(condition, is_night, vol, path=path, loop=False)
-                    self._sound_base = base
-                    self._last_sound = path
-                    iv = max(1, int(cfg.get("sound_interval_minutes", 5)))
-                    # Jitter the gap (±30%) so it never feels metronomic.
-                    gap = iv * 60 * (0.7 + 0.6 * random.random())
-                    self._next_sound_at = now + datetime.timedelta(seconds=gap)
-                    status["applied"].append(f"sound(once): {os.path.basename(path)}")
-            else:  # loop
-                self._next_sound_at = None
-                if base_changed or not self._sound_on:
-                    path = sound.pick_base(base)
-                    sound.play_ambient(condition, is_night, vol, path=path, loop=True)
-                    self._sound_base = base
-                    self._sound_on = True
                     self._last_sound = path
                     status["applied"].append(f"sound: {os.path.basename(path)}")
                 else:
-                    sound.set_volume(vol)
+                    status["note"] = "ambient unavailable — retrying"
+            else:
+                sound.set_volume(vol)
         elif self._sound_on:
+            self._sound_waiting_for_priority = False
             sound.stop_sound()
             self._sound_on = False
             self._sound_base = None
+        else:
+            self._sound_waiting_for_priority = False
 
         # --- tasks ------------------------------------------------------
         if config.feature_enabled(cfg, "tasks") and store is not None:
-            visual_change = False
-            for task in store.due_tasks(now):
-                if _run_task_action(task, cfg):
-                    visual_change = True
-                store.mark_fired(task, now)
+            for task in store.claim_due_tasks(now):
+                _run_task_action(task, cfg)
                 status["fired_tasks"].append(task.get("title", task.get("id")))
-            if visual_change:
-                # A task changed the weather/theme — drop the guards so the new
-                # look applies on the very next step (and wake the loop fast).
-                self._last_wall_at = None
-                self._last_theme = None
-                self.transitioning = True
 
         return status
 
@@ -525,6 +564,8 @@ class EngineThread(threading.Thread):
         self.engine = Engine()
         self._stop = threading.Event()
         self._wake = threading.Event()
+        self._lease = _new_engine_lock(config_path)
+        self.is_owner = False
         self.last_status = None
         self._last_full = None      # monotonic time of the last full evaluation
 
@@ -535,56 +576,113 @@ class EngineThread(threading.Thread):
     def wake(self):
         """Force an immediate re-evaluation (e.g. after Apply Now)."""
         self._last_full = None
+        _signal_engine_wake(self.config_path)
         self._wake.set()
 
     def run(self):
-        while not self._stop.is_set():
-            cfg = config.load_config(self.config_path)
-            store = tasks_mod.TaskStore(self.tasks_path)
-            now = datetime.datetime.now()
-            mono = time.monotonic()
-            tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
+        wake_stamp = _engine_wake_stamp(self.config_path)
+        cfg = None
+        try:
+            while not self._stop.is_set():
+                if not self.is_owner:
+                    self.is_owner = self._lease.acquire()
+                    if not self.is_owner:
+                        self._wake.wait(timeout=0.5)
+                        self._wake.clear()
+                        continue
+                    self._last_full = None
+                    cfg = None
+                    wake_stamp = _engine_wake_stamp(self.config_path)
 
-            # Step often while a colour cross-fade is in progress so the
-            # transition is smooth; otherwise on the normal cadence.
-            full_iv = 0.5 if self.engine.transitioning else tick_iv
-            if self._last_full is None or (mono - self._last_full) >= full_iv:
-                try:
-                    self.last_status = self.engine.step(cfg, store, now)
-                    if self.on_status:
-                        self.on_status(self.last_status)
-                except Exception as e:
-                    print(f"[engine] step failed: {e}")
-                self._last_full = mono
+                current_stamp = _engine_wake_stamp(self.config_path)
+                if current_stamp != wake_stamp:
+                    wake_stamp = current_stamp
+                    self.engine.invalidate_visuals()
+                    self._last_full = None
 
-            sleep = 0.5 if self.engine.transitioning else tick_iv
-            self._wake.wait(timeout=max(0.05, sleep))
-            self._wake.clear()
-        sound.stop_sound()
+                mono = time.monotonic()
+
+                if (self.engine._sound_on and sound.current_sound is not None
+                        and not sound.ambient_is_playing()):
+                    self._last_full = None
+
+                tick_iv = max(5, int((cfg or {}).get("tick_interval_seconds", 30)))
+                full_iv = (0 if cfg is None else
+                           _engine_poll_interval(cfg, self.engine, tick_iv))
+                if self._last_full is None or (mono - self._last_full) >= full_iv:
+                    cfg = config.load_config(self.config_path)
+                    store = tasks_mod.TaskStore(self.tasks_path)
+                    now = datetime.datetime.now()
+                    tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
+                    try:
+                        self.last_status = self.engine.step(cfg, store, now)
+                        if self.on_status:
+                            self.on_status(self.last_status)
+                    except Exception as e:
+                        print(f"[engine] step failed: {e}")
+                    self._last_full = mono
+
+                sleep_iv = _engine_poll_interval(cfg, self.engine, tick_iv)
+                self._wake.wait(timeout=max(0.05, min(sleep_iv, 0.5)))
+                self._wake.clear()
+        finally:
+            if self.is_owner:
+                sound.stop_sound()
+            self._lease.release()
+            self.is_owner = False
 
 
 def run_forever(config_path=config.CONFIG_FILE, tasks_path=tasks_mod.TASKS_FILE):
     """Headless loop used by ``main.py --background``."""
     print("[engine] Background mode started.")
     eng = Engine()
+    lease = _new_engine_lock(config_path)
+    gui_presence = _new_gui_presence(config_path)
+    is_owner = False
     last_full = None
+    wake_stamp = _engine_wake_stamp(config_path)
+    cfg = None
     try:
         while True:
-            cfg = config.load_config(config_path)
-            store = tasks_mod.TaskStore(tasks_path)
-            mono = time.monotonic()
-            tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
+            if not is_owner:
+                is_owner = lease.acquire()
+                if not is_owner:
+                    time.sleep(0.5)
+                    continue
+                last_full = None
+                cfg = None
+                wake_stamp = _engine_wake_stamp(config_path)
 
-            full_iv = 0.5 if eng.transitioning else tick_iv
+            current_stamp = _engine_wake_stamp(config_path)
+            if current_stamp != wake_stamp:
+                wake_stamp = current_stamp
+                eng.invalidate_visuals()
+                last_full = None
+
+            mono = time.monotonic()
+
+            if (eng._sound_on and sound.current_sound is not None
+                    and not sound.ambient_is_playing()):
+                last_full = None
+
+            tick_iv = max(5, int((cfg or {}).get("tick_interval_seconds", 30)))
+            full_iv = 0 if cfg is None else _engine_poll_interval(cfg, eng, tick_iv)
             if last_full is None or (mono - last_full) >= full_iv:
+                cfg = _background_config(
+                    config.load_config(config_path), gui_presence.active())
+                store = tasks_mod.TaskStore(tasks_path)
+                tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
                 try:
                     eng.step(cfg, store)
                 except Exception as e:
                     print(f"[engine] step failed: {e}")
                 last_full = mono
 
-            sleep = 0.5 if eng.transitioning else tick_iv
-            time.sleep(max(0.05, sleep))
+            sleep_iv = _engine_poll_interval(cfg, eng, tick_iv)
+            time.sleep(max(0.05, min(sleep_iv, 0.5)))
     except KeyboardInterrupt:
-        sound.stop_sound()
         print("[engine] Background mode stopped.")
+    finally:
+        if is_owner:
+            sound.stop_sound()
+        lease.release()

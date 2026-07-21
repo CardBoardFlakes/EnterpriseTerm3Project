@@ -1,8 +1,9 @@
 # Wallpaper Guide
 
-The desktop background is a static sky gradient coloured by the current weather
-and time of day, with optional weather patterns and a cold-weather warm tint. It
-is a still PNG that the app regenerates and cross-fades as conditions change.
+The desktop background is a generated sky gradient coloured by current weather
+and time of day, with optional weather patterns and a cold-weather warm tint.
+Each frame is a still PNG; the app periodically regenerates it as conditions,
+light, celestial position, or subtle drift change.
 
 - [Wallpaper look](#wallpaper-look)
 - [Weather patterns](#weather-patterns)
@@ -12,25 +13,32 @@ is a still PNG that the app regenerates and cross-fades as conditions change.
 
 ## Wallpaper look
 
-On the **Appearance** tab, the **Wallpaper look** card controls the static look:
+On the **Settings** tab, the **Wallpaper look** card controls generated images:
 
 - **Weather tint strength** — how strongly the weather colour shows vs. a
   neutral base.
 - **Dynamic (subtle colour shift)** — a slow, barely-perceptible hue/brightness
   drift so the desktop feels alive without being distracting.
 - **Colour shift strength** — how far that drift travels.
-- **Weather patterns** — the moving overlay (see below); turn off for a plain
-  gradient.
+- **Sun, moon, stars & weather patterns** — the condition-specific overlay (see
+  below); positions shift between redraws. Turn it off for a plain gradient,
+  including no sun on a clear afternoon.
 - **Warm palette when it's cold outside** — see [warmth](#cold-weather-warmth).
 
 Each weather condition has its own base colour and gradient, so clear, cloudy,
 rainy, stormy, and night skies all look distinct.
 
+Turning **Weather wallpaper** off restores the non-Flow wallpaper that was
+visible before Flow most recently took over. Flow keeps a stable local copy in
+`~/.environment_theme_controller/`, so restoration still works if macOS
+originally reported a temporary source path.
+
 ---
 
 ## Weather patterns
 
-When **Weather patterns** is on, a light overlay is drawn per condition:
+When **Sun, moon, stars & weather patterns** is on, a light overlay is drawn per
+condition:
 
 | Condition | Pattern |
 |---|---|
@@ -42,9 +50,8 @@ When **Weather patterns** is on, a light overlay is drawn per condition:
 | Cloudy night | The moon + a few stars behind **dark, moonlit clouds** — distinct from a clear night |
 
 Patterns are drawn *sparsely* — cost scales with the number of elements, not the
-pixel count — so the wallpaper stays cheap to generate. The elements are placed a
-little differently on each redraw, so the picture keeps looking fresh as it
-updates.
+pixel count — so the wallpaper stays cheap to generate. Each wallpaper remains
+still after it is set; element positions shift when the next PNG is generated.
 
 ---
 

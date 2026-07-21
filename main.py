@@ -12,6 +12,7 @@ import sys
 import config
 import tasks as tasks_mod
 import engine
+import audiocheck
 
 
 def run_once():
@@ -22,6 +23,7 @@ def run_once():
 
 
 def main():
+    audiocheck.register_flow_process()
     args = sys.argv[1:]
 
     if "--background" in args:
@@ -33,12 +35,24 @@ def main():
         return
 
     # Default: launch the GUI. Fall back to a single tick if no display.
+    gui_presence = None
     try:
         import gui
+        gui_presence = engine._new_gui_presence()
+        gui_presence.register()
+        engine._signal_engine_wake()
         gui.main()
     except Exception as e:
         print(f"[main] GUI unavailable ({e}); running a single tick instead.")
+        if gui_presence is not None:
+            gui_presence.unregister()
+            engine._signal_engine_wake()
+            gui_presence = None
         run_once()
+    finally:
+        if gui_presence is not None:
+            gui_presence.unregister()
+            engine._signal_engine_wake()
 
 
 if __name__ == "__main__":

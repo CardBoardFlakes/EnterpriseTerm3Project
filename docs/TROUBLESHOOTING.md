@@ -29,35 +29,49 @@ Symptom: `No module named '_tkinter'` or the window never appears.
 If there's genuinely no display, `python main.py` falls back to a single tick
 and exits — use `--background` for the headless loop instead.
 
-When run on macOS try checking the doc for the controller
-
 ---
 
 ## There's no sound
 
 1. Install pygame: `pip install pygame`.
 2. Make sure **Ambient sound** is ticked (Dashboard) and **Ambient volume**
-   isn't at 0 (Appearance).
+   isn't at 0 (Settings).
 3. Check the console for `[sound] Audio unavailable …`. If mixer init fails,
    another app may hold the audio device, or the environment has no output.
 4. Confirm the files are real `.wav` in `sounds/` — see the
    [sound guide](SOUNDS.md).
 
-In **random** mode, sound is *supposed* to be silent most of the time — it plays
-a clip only every few minutes.
+Ambient sound should loop continuously. The engine retries mixer initialisation
+after temporary device errors and restarts a dropped loop within a few seconds.
+With **Pause ambient when other audio is playing** selected, Flow checks every
+five seconds and resumes after other output ends. On Windows this needs `pycaw`;
+macOS uses built-in CoreAudio and needs no extra package.
+
+Flow ignores audio devices owned by its own GUI and background processes. This
+means stopping Flow music resumes ambience even when the music mixer remains
+open but silent.
+
+Opening the GUI while the run-at-login background process is active is safe:
+both processes share one engine owner. Ambient sound runs only while at least
+one Flow window is open. Closing the last window signals that owner to stop
+ambience; the headless theme, wallpaper, weather, and reminders keep running.
 
 ---
 
 ## The wallpaper isn't changing
 
-- Ensure **Weather wallpaper** is ticked and you pressed **▶ Start** (not just
-  Save).
-- Static redraws are rate-limited (`wallpaper_min_interval_seconds`, default
+- Ensure **Weather wallpaper** is ticked. Changes save and apply automatically.
+- Generated wallpaper redraws are rate-limited (`wallpaper_min_interval_seconds`, default
   45s) and only happen when the colour/brightness actually changes — give it a
   moment, or change the manual weather to force a difference.
 - Linux desktops aren't supported for *setting* the wallpaper (the image is
   still generated).
 - Check the console for `[wallpaper] Failed to set …`.
+
+Unticking **Weather wallpaper** restores the non-Flow wallpaper that was visible
+before Flow most recently took over. Flow archives a stable copy rather than
+relying on a temporary OS path. Turning off **Enable everything** also restores
+it because that select-all action clears **Weather wallpaper**.
 
 ### It only changes when I'm *not* in a fullscreen app (macOS)
 
@@ -85,8 +99,8 @@ system accent (Blue, Purple, Graphite, …), so it won't be an exact RGB match.
 
 - `fallback` means the live fetch failed (no `requests`, no network, or the API
   was unreachable). Install `requests` and check your connection.
-- Wrong city? Set your coordinates in `config.json` →
-  [`location`](CONFIGURATION.md#location).
+- Wrong city? Pick **Settings → Engine → City**. For an unlisted city, set its
+  coordinates in `config.json` → [`location`](CONFIGURATION.md#location).
 - Want to test a specific condition regardless of the sky? Use the **Manual
   theme changer** on the Dashboard (`Weather` = rain/storm/…).
 
@@ -106,12 +120,26 @@ system accent (Blue, Purple, Graphite, …), so it won't be an exact RGB match.
 
 ## Reset everything
 
-Stop the app, then delete the state files — they're recreated with defaults on
-next launch:
+Stop the app, then delete the state files. Defaults are used on next launch;
+`config.json` is written again when a setting changes and `tasks.json` when a
+reminder changes.
+
+Before deleting the generated-wallpaper folder, untick **Weather wallpaper** so
+Flow can restore the original desktop first. That folder also contains Flow's
+archived copy used for restoration.
+
+macOS/Linux shell:
 
 ```bash
 rm config.json tasks.json
 rm -rf ~/.environment_theme_controller     # generated wallpaper assets
+```
+
+Windows PowerShell (run from the project folder):
+
+```powershell
+Remove-Item config.json, tasks.json -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.environment_theme_controller" -Recurse -Force -ErrorAction SilentlyContinue
 ```
 
 (Deleting `sounds/` also removes any custom audio; placeholders regenerate.)
