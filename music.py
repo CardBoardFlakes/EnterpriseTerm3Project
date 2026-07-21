@@ -9,9 +9,12 @@ Degrades silently when pygame/audio is unavailable.
 import math
 import os
 import struct
+import threading
+import time
 import wave
 
 import sound  # reuse the shared pygame.mixer initialisation
+import processlock
 
 MUSIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music")
 AUDIO_EXTS = (".mp3", ".ogg", ".wav", ".flac", ".m4a")
@@ -23,6 +26,35 @@ SAMPLE_TRACKS = (
 _playlist = []      # list of file paths currently queued
 _index = -1         # index into _playlist of the current track
 _paused = False
+_watch_generation = 0
+_music_lock = processlock.ProcessFileLock(
+    processlock.path("music", MUSIC_DIR))
+
+
+def _start_end_watcher():
+    global _watch_generation
+    _watch_generation += 1
+    generation = _watch_generation
+
+    def watch():
+        while generation == _watch_generation:
+            time.sleep(0.5)
+            mixer = sound._mixer
+            try:
+                busy = mixer not in (None, False) and mixer.music.get_busy()
+            except Exception:
+                busy = False
+            if not busy:
+                if generation == _watch_generation:
+                    _music_lock.release()
+                return
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def _stop_end_watcher():
+    global _watch_generation
+    _watch_generation += 1
 
 
 def ensure_dir():
@@ -129,16 +161,20 @@ def play(path, volume=None):
     if not os.path.isfile(path):
         print(f"[music] File not found: {path}")
         return False
+    if not _music_lock.acquire():
+        return False
     try:
         pg.mixer.music.load(path)
         if volume is not None:
             pg.mixer.music.set_volume(max(0.0, min(1.0, volume / 100.0)))
         pg.mixer.music.play()
         _paused = False
+        _start_end_watcher()
         print(f"[music] Playing: {os.path.basename(path)}")
         return True
     except Exception as e:
         print(f"[music] Could not play {os.path.basename(path)}: {e}")
+        _music_lock.release()
         return False
 
 
@@ -153,34 +189,41 @@ def play_list(tracks, index=0, volume=None):
 
 
 def toggle_pause():
-    pg = _pg()
-    if not pg:
+    mixer = sound._mixer
+    if mixer in (None, False):
         return
     global _paused
     if _paused:
-        pg.mixer.music.unpause()
+        if not _music_lock.acquire():
+            return
+        mixer.music.unpause()
         _paused = False
+        _start_end_watcher()
     else:
-        pg.mixer.music.pause()
+        mixer.music.pause()
         _paused = True
+        _stop_end_watcher()
+        _music_lock.release()
 
 
 def stop():
     global _playlist, _index, _paused
-    pg = _pg()
-    if pg:
+    mixer = sound._mixer
+    if mixer not in (None, False):
         try:
-            pg.mixer.music.stop()
+            mixer.music.stop()
         except Exception:
             pass
     _playlist, _index, _paused = [], -1, False
+    _stop_end_watcher()
+    _music_lock.release()
 
 
 def set_volume(volume):
-    pg = _pg()
-    if pg:
+    mixer = sound._mixer
+    if mixer not in (None, False):
         try:
-            pg.mixer.music.set_volume(max(0.0, min(1.0, volume / 100.0)))
+            mixer.music.set_volume(max(0.0, min(1.0, volume / 100.0)))
         except Exception:
             pass
 
@@ -214,13 +257,23 @@ def is_paused():
 
 
 def is_playing():
-    pg = _pg()
-    if not pg:
+    mixer = sound._mixer
+    if mixer in (None, False):
         return False
     try:
-        return bool(pg.mixer.music.get_busy()) and not _paused
+        playing = bool(mixer.music.get_busy()) and not _paused
+        if not playing and _music_lock.owned:
+            _music_lock.release()
+        return playing
     except Exception:
+        if _music_lock.owned:
+            _music_lock.release()
         return False
+
+
+def is_playing_anywhere():
+    """Whether Flow music is active in this or another app process."""
+    return is_playing() or _music_lock.held_elsewhere()
 
 
 def open_folder(directory=MUSIC_DIR):

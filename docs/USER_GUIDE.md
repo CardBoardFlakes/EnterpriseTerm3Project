@@ -178,6 +178,8 @@ python main.py --background  # run the engine loop forever (Ctrl-C to stop)
 `--once` is useful for scripting or a quick theme/wallpaper test. It may start
 ambience during that cycle, but audio ends when the process exits.
 `--background` is what the run-at-login launcher uses.
+Opening the GUI at the same time does not start a competing engine. The two
+processes share one engine owner, and GUI changes wake it immediately.
 
 ---
 

@@ -82,6 +82,10 @@ python main.py --background # headless loop (what "run at login" launches)
 python tests.py             # run the test suite
 ```
 
+GUI and background modes may be open together. They share one active engine,
+so opening the settings window does not duplicate or silence ambient playback;
+GUI changes wake the owner and still apply automatically.
+
 ---
 
 ## Location & privacy
@@ -131,6 +135,7 @@ town's coordinates rather than your exact address.
 | `tasks.py` | Tasks & schedules store |
 | `activity.py` | Idle-time detection |
 | `autostart.py` | Run-at-login (LaunchAgent / Run key) |
+| `processlock.py` | Single-engine and cross-process audio ownership |
 
 Settings are stored in `config.json`; tasks in `tasks.json`; generated
 wallpaper assets in `~/.environment_theme_controller/`.
@@ -152,7 +157,7 @@ pip install ruff
 python3 -m ruff check .      # 0 issues
 ```
 
-A 420-check headless test suite covering config,
+A 429-check headless test suite covering config,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
 / warmth / reliable original restoration, sound selection / variants /

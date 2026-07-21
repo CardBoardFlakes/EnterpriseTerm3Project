@@ -22,6 +22,7 @@ import sound
 import music
 import profiles
 import audiocheck
+import processlock
 import tasks as tasks_mod
 
 
@@ -226,7 +227,7 @@ def other_audio_playing(cfg):
     apps (Spotify, etc.) only pause it when ``pause_when_other_audio`` is on.
     """
     try:
-        if music.is_playing():          # our music always wins over ambience
+        if music.is_playing_anywhere():  # our music always wins over ambience
             return True
     except Exception:
         pass
@@ -252,8 +253,35 @@ def _engine_poll_interval(cfg, eng, tick_interval):
     if eng.transitioning:
         return 0.5
     monitor_audio = config.feature_enabled(cfg, "ambient_sound") and (
-        eng._sound_on or cfg.get("pause_when_other_audio", False))
+        eng._sound_on or eng._sound_waiting_for_priority
+        or cfg.get("pause_when_other_audio", False))
     return min(tick_interval, 5) if monitor_audio else tick_interval
+
+
+def _engine_wake_path(config_path):
+    return processlock.path("engine-wake", config_path)
+
+
+def _signal_engine_wake(config_path=config.CONFIG_FILE):
+    wake_path = _engine_wake_path(config_path)
+    try:
+        with open(wake_path, "a+b"):
+            pass
+        os.utime(wake_path, None)
+    except OSError:
+        pass
+
+
+def _engine_wake_stamp(config_path=config.CONFIG_FILE):
+    try:
+        return os.stat(_engine_wake_path(config_path)).st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _new_engine_lock(config_path):
+    return processlock.ProcessFileLock(
+        processlock.path("engine", config_path))
 
 
 class Engine:
@@ -276,6 +304,7 @@ class Engine:
         self._last_sound = None        # ambient path last played
         self._sound_on = False
         self._sound_base = None        # ambient base currently selected
+        self._sound_waiting_for_priority = False
         self._last_wall_key = None     # (drifted_rgb, brightness_bucket) last drawn
         self._last_wall_at = None
         self._last_sun = None          # sun/moon fraction last drawn (for tracking)
@@ -458,12 +487,14 @@ class Engine:
         # --- sound: continuous ambience, restarted if the audio device drops --
         if config.feature_enabled(cfg, "ambient_sound") and other_audio_playing(cfg):
             # Something else is playing — get out of the way, resume later.
+            self._sound_waiting_for_priority = True
             if self._sound_on:
                 sound.stop_sound()
                 self._sound_on = False
             self._sound_base = None
             status["note"] = "ambient paused — other audio playing"
         elif config.feature_enabled(cfg, "ambient_sound"):
+            self._sound_waiting_for_priority = False
             wind = eff.get("wind_speed") or 0
             base = sound.ambient_base(condition, is_night, wind)
             vol = cfg.get("sound_volume", 25)
@@ -484,9 +515,12 @@ class Engine:
             else:
                 sound.set_volume(vol)
         elif self._sound_on:
+            self._sound_waiting_for_priority = False
             sound.stop_sound()
             self._sound_on = False
             self._sound_base = None
+        else:
+            self._sound_waiting_for_priority = False
 
         # --- tasks ------------------------------------------------------
         if config.feature_enabled(cfg, "tasks") and store is not None:
@@ -516,6 +550,8 @@ class EngineThread(threading.Thread):
         self.engine = Engine()
         self._stop = threading.Event()
         self._wake = threading.Event()
+        self._lease = _new_engine_lock(config_path)
+        self.is_owner = False
         self.last_status = None
         self._last_full = None      # monotonic time of the last full evaluation
 
@@ -526,56 +562,100 @@ class EngineThread(threading.Thread):
     def wake(self):
         """Force an immediate re-evaluation (e.g. after Apply Now)."""
         self._last_full = None
+        _signal_engine_wake(self.config_path)
         self._wake.set()
 
     def run(self):
-        while not self._stop.is_set():
-            cfg = config.load_config(self.config_path)
-            store = tasks_mod.TaskStore(self.tasks_path)
-            now = datetime.datetime.now()
-            mono = time.monotonic()
-            tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
+        wake_stamp = _engine_wake_stamp(self.config_path)
+        cfg = None
+        try:
+            while not self._stop.is_set():
+                if not self.is_owner:
+                    self.is_owner = self._lease.acquire()
+                    if not self.is_owner:
+                        self._wake.wait(timeout=0.5)
+                        self._wake.clear()
+                        continue
+                    self._last_full = None
+                    cfg = None
+                    wake_stamp = _engine_wake_stamp(self.config_path)
 
-            if (self.engine._sound_on and sound.current_sound is not None
-                    and not sound.ambient_is_playing()):
-                self._last_full = None
+                current_stamp = _engine_wake_stamp(self.config_path)
+                if current_stamp != wake_stamp:
+                    wake_stamp = current_stamp
+                    self.engine.invalidate_visuals()
+                    self._last_full = None
 
-            # Step often enough to animate transitions and detect both the
-            # start and end of higher-priority audio.
-            full_iv = _engine_poll_interval(cfg, self.engine, tick_iv)
-            if self._last_full is None or (mono - self._last_full) >= full_iv:
-                try:
-                    self.last_status = self.engine.step(cfg, store, now)
-                    if self.on_status:
-                        self.on_status(self.last_status)
-                except Exception as e:
-                    print(f"[engine] step failed: {e}")
-                self._last_full = mono
+                mono = time.monotonic()
 
-            sleep_iv = _engine_poll_interval(cfg, self.engine, tick_iv)
-            self._wake.wait(timeout=max(0.05, sleep_iv))
-            self._wake.clear()
-        sound.stop_sound()
+                if (self.engine._sound_on and sound.current_sound is not None
+                        and not sound.ambient_is_playing()):
+                    self._last_full = None
+
+                tick_iv = max(5, int((cfg or {}).get("tick_interval_seconds", 30)))
+                full_iv = (0 if cfg is None else
+                           _engine_poll_interval(cfg, self.engine, tick_iv))
+                if self._last_full is None or (mono - self._last_full) >= full_iv:
+                    cfg = config.load_config(self.config_path)
+                    store = tasks_mod.TaskStore(self.tasks_path)
+                    now = datetime.datetime.now()
+                    tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
+                    try:
+                        self.last_status = self.engine.step(cfg, store, now)
+                        if self.on_status:
+                            self.on_status(self.last_status)
+                    except Exception as e:
+                        print(f"[engine] step failed: {e}")
+                    self._last_full = mono
+
+                sleep_iv = _engine_poll_interval(cfg, self.engine, tick_iv)
+                self._wake.wait(timeout=max(0.05, min(sleep_iv, 0.5)))
+                self._wake.clear()
+        finally:
+            if self.is_owner:
+                sound.stop_sound()
+            self._lease.release()
+            self.is_owner = False
 
 
 def run_forever(config_path=config.CONFIG_FILE, tasks_path=tasks_mod.TASKS_FILE):
     """Headless loop used by ``main.py --background``."""
     print("[engine] Background mode started.")
     eng = Engine()
+    lease = _new_engine_lock(config_path)
+    is_owner = False
     last_full = None
+    wake_stamp = _engine_wake_stamp(config_path)
+    cfg = None
     try:
         while True:
-            cfg = config.load_config(config_path)
-            store = tasks_mod.TaskStore(tasks_path)
+            if not is_owner:
+                is_owner = lease.acquire()
+                if not is_owner:
+                    time.sleep(0.5)
+                    continue
+                last_full = None
+                cfg = None
+                wake_stamp = _engine_wake_stamp(config_path)
+
+            current_stamp = _engine_wake_stamp(config_path)
+            if current_stamp != wake_stamp:
+                wake_stamp = current_stamp
+                eng.invalidate_visuals()
+                last_full = None
+
             mono = time.monotonic()
-            tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
 
             if (eng._sound_on and sound.current_sound is not None
                     and not sound.ambient_is_playing()):
                 last_full = None
 
-            full_iv = _engine_poll_interval(cfg, eng, tick_iv)
+            tick_iv = max(5, int((cfg or {}).get("tick_interval_seconds", 30)))
+            full_iv = 0 if cfg is None else _engine_poll_interval(cfg, eng, tick_iv)
             if last_full is None or (mono - last_full) >= full_iv:
+                cfg = config.load_config(config_path)
+                store = tasks_mod.TaskStore(tasks_path)
+                tick_iv = max(5, int(cfg.get("tick_interval_seconds", 30)))
                 try:
                     eng.step(cfg, store)
                 except Exception as e:
@@ -583,7 +663,10 @@ def run_forever(config_path=config.CONFIG_FILE, tasks_path=tasks_mod.TASKS_FILE)
                 last_full = mono
 
             sleep_iv = _engine_poll_interval(cfg, eng, tick_iv)
-            time.sleep(max(0.05, sleep_iv))
+            time.sleep(max(0.05, min(sleep_iv, 0.5)))
     except KeyboardInterrupt:
-        sound.stop_sound()
         print("[engine] Background mode stopped.")
+    finally:
+        if is_owner:
+            sound.stop_sound()
+        lease.release()

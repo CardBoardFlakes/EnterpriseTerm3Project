@@ -22,6 +22,7 @@ import sound
 import tasks as tasks_mod
 import autostart
 import engine
+import processlock
 
 _passed = 0
 _failed = 0
@@ -630,6 +631,7 @@ def test_sound():
             sound._mixer = mixer
             sound.current_sound = None
             sound._current_channel = None
+            sound._claim_ambient_lock = lambda: True
             check("ambient playback starts", sound.play_sound(sample, loop=True) is True)
             check("pygame receives infinite-loop flag", mixer.loaded.loops == -1)
             check("active channel reports playing", sound.ambient_is_playing() is True)
@@ -643,6 +645,61 @@ def test_sound():
             (sound._ensure_mixer, sound._mixer, sound.current_sound,
              sound._current_channel, sound._current_path,
              sound._claim_ambient_lock) = old
+
+
+def test_process_coordination():
+    section("cross-process engine and audio ownership")
+    with tempfile.TemporaryDirectory() as directory:
+        lock_path = os.path.join(directory, "owner.lock")
+        first = processlock.ProcessFileLock(lock_path)
+        second = processlock.ProcessFileLock(lock_path)
+        check("first process lock acquires", first.acquire() is True)
+        check("second process lock is excluded", second.acquire() is False)
+        check("held lock is visible to peers", second.held_elsewhere() is True)
+        first.release()
+        check("released process lock can transfer", second.acquire() is True)
+        second.release()
+
+        cfg_path = os.path.join(directory, "config.json")
+        before = engine._engine_wake_stamp(cfg_path)
+        engine._signal_engine_wake(cfg_path)
+        check("engine wake signal crosses processes",
+              engine._engine_wake_stamp(cfg_path) != before)
+
+    import music
+
+    class PeerMusicLock:
+        owned = False
+
+        @staticmethod
+        def held_elsewhere():
+            return True
+
+    old_lock, old_playing = music._music_lock, music.is_playing
+    try:
+        music._music_lock = PeerMusicLock()
+        music.is_playing = lambda: False
+        check("background engine sees Flow music in GUI process",
+              music.is_playing_anywhere() is True)
+    finally:
+        music._music_lock, music.is_playing = old_lock, old_playing
+
+    old_mixer = sound._mixer
+    old_ensure = sound._ensure_mixer
+    try:
+        mixer_starts = {"count": 0}
+        sound._mixer = None
+        sound._ensure_mixer = lambda: mixer_starts.__setitem__(
+            "count", mixer_starts["count"] + 1)
+        check("checking idle music does not open an audio device",
+              music.is_playing() is False and sound._mixer is None)
+        music.set_volume(40)
+        music.stop()
+        check("idle music controls do not open an audio device",
+              mixer_starts["count"] == 0 and sound._mixer is None)
+    finally:
+        sound._mixer = old_mixer
+        sound._ensure_mixer = old_ensure
 
 
 def test_music():
@@ -762,6 +819,10 @@ def test_duck_other_audio():
     cfg["pause_when_other_audio"] = False
     check("idle engine retains configured cadence",
           engine._engine_poll_interval(cfg, eng, 30) == 30)
+    eng._sound_waiting_for_priority = True
+    check("priority-paused ambient keeps resume polling",
+          engine._engine_poll_interval(cfg, eng, 30) == 5)
+    eng._sound_waiting_for_priority = False
     eng._sound_on = True
     check("playing ambient monitors dropped playback",
           engine._engine_poll_interval(cfg, eng, 30) == 5)
@@ -2063,6 +2124,7 @@ def main():
     test_wallpaper_patterns()
     test_wallpaper_original_archive()
     test_sound()
+    test_process_coordination()
     test_sound_variants_and_modes()
     test_music()
     test_duck_other_audio()

@@ -43,6 +43,10 @@ weather.get_live_weather (Open-Meteo, cached)      # real measurements
 thread + `--background`); `engine.tick()` is the one-shot path (`--once`, GUI
 live-apply). Both must be kept consistent when you change behaviour.
 
+GUI and `--background` can coexist, but a cross-process lease permits only one
+engine loop to call `Engine.step`. GUI changes signal the owner through a
+shared wake marker, so auto-apply remains immediate.
+
 ### Module map
 
 | File | Role |
@@ -56,6 +60,7 @@ live-apply). Both must be kept consistent when you change behaviour.
 | `sound.py` | Ambient selection + variants + pygame playback + cross-process playback lock + placeholder synth |
 | `music.py` | Background music player (pygame `mixer.music`) + stdlib-generated starter tracks |
 | `audiocheck.py` | Other-process output detection (CoreAudio on macOS, optional pycaw on Windows) |
+| `processlock.py` | Cross-platform process leases for engine, ambience, and Flow music ownership |
 | `pomodoro.py`, `clocks.py` | Timers |
 | `tasks.py` | Task/schedule store (`tasks.json`) |
 | `activity.py`, `autostart.py` | Idle detection; run-at-login |
@@ -68,8 +73,8 @@ live-apply). Both must be kept consistent when you change behaviour.
 - **Work only on change**: the engine re-applies theme/wallpaper/sound only
   when the visible result changes (signatures/guards). Don't add unconditional
   per-tick OS writes.
-- **Only one process owns ambient playback.** GUI and run-at-login background
-  engines may overlap; preserve `sound.py`'s cross-process lock.
+- **Only one engine loop runs at a time.** GUI and run-at-login processes may
+  overlap; preserve the engine lease, shared wake marker, and audio locks.
 - **`enabled` is select-all UI state, not an engine gate.** Every entry under
   `features` works independently while `enabled` is false. Clearing select-all
   clears those entries and must still run wallpaper/sound cleanup.

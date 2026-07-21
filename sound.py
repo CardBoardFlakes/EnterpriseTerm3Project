@@ -13,9 +13,10 @@ import math
 import random
 import struct
 import threading
-import tempfile
 import time
 import wave
+
+import processlock
 
 # Absolute so the app always finds your files regardless of the working
 # directory (Finder launch, run-at-login, `--once` from elsewhere, …).
@@ -44,56 +45,17 @@ _current_channel = None
 _current_path = None      # path of the sound currently playing (for dedup)
 _current_volume = 0.25
 _music_prev_vol = None     # music-stream volume saved while a chime ducks it
-_ambient_lock_file = None
-_ambient_lock_path = os.path.join(
-    tempfile.gettempdir(),
-    f"flow-ambient-{hashlib.sha256(SOUNDS_DIR.encode()).hexdigest()[:16]}.lock")
+_ambient_lock = processlock.ProcessFileLock(
+    processlock.path("ambient", SOUNDS_DIR))
 
 
 def _claim_ambient_lock():
     """Allow one GUI/background process to own ambient playback."""
-    global _ambient_lock_file
-    if _ambient_lock_file is not None:
-        return True
-    lock_file = None
-    try:
-        lock_file = open(_ambient_lock_path, "a+b")
-        lock_file.seek(0, os.SEEK_END)
-        if lock_file.tell() == 0:
-            lock_file.write(b"\0")
-            lock_file.flush()
-        lock_file.seek(0)
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (OSError, IOError):
-        if lock_file is not None:
-            lock_file.close()
-        return False
-    _ambient_lock_file = lock_file
-    return True
+    return _ambient_lock.acquire()
 
 
 def _release_ambient_lock():
-    global _ambient_lock_file
-    lock_file = _ambient_lock_file
-    if lock_file is None:
-        return
-    try:
-        lock_file.seek(0)
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-    except (OSError, IOError):
-        pass
-    lock_file.close()
-    _ambient_lock_file = None
+    _ambient_lock.release()
 
 
 def _ensure_mixer():
