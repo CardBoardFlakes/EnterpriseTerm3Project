@@ -23,7 +23,8 @@ A running clock keeps going even while you view another mode.
 
 Set **Minutes**, press **Set**, then **Start**. It counts down and, at zero,
 plays the chime and shows a notification. Starting a finished timer restarts it.
-The most recently set duration is saved in `config.json`.
+The most recently set duration is saved in `config.json`. Skip is only useful
+for Pomodoro phases, so no Skip button is shown in plain Timer mode.
 
 ### ⏱ Stopwatch
 

@@ -24,7 +24,6 @@ from tkinter import ttk, messagebox, colorchooser, filedialog, font as tkfont
 
 import config
 import weather
-import theme
 import tasks as tasks_mod
 import autostart
 import engine
@@ -238,16 +237,12 @@ def _weather_summary(condition, phase, manual=False):
 
 def _weather_card_data(live, cfg, now=None):
     """Apply current manual controls to cached live measurements."""
+    now = now or datetime.datetime.now()
     effective = weather.apply_overrides(live, cfg, now)
-    manual_time = (cfg.get("manual_time") or "auto").lower()
-    phase = (theme.normalize_phase(manual_time) if manual_time != "auto"
-             else theme.compute_day_phase(
-                 effective["sunrise"], effective["sunset"], now))
-    rgb, brightness = theme.compute_theme_color(
-        effective["condition"], effective["sunrise"], effective["sunset"],
-        phase=phase, now=now)
+    resolved = engine.resolve_theme(effective, cfg, now)
     data = dict(effective)
-    data.update({"phase": phase, "color": list(rgb), "brightness": brightness})
+    data.update(resolved)
+    data["color"] = list(resolved["color"])
     return data
 
 
@@ -415,6 +410,7 @@ class App:
         self.timer = clocks.CountdownTimer(self.v_timermin.get())
         self.clock_settings = None      # per-mode settings frame (rebuilt on switch)
         self.btn_clock_extra = None     # Skip / Lap context button
+        self.btn_clock_reset = None
         self.lap_box = None             # stopwatch laps list (when shown)
 
     # --- styling / time-of-day UI theme --------------------------------
@@ -780,7 +776,7 @@ class App:
                    command=self.on_pick_color).pack(side="left", padx=6)
         ttk.Button(crow, text="Auto", style="Ghost.TButton",
                    command=self._on_auto_color).pack(side="left")
-        self.v_color.trace_add("write", lambda *_: self._update_swatch())
+        self.v_color.trace_add("write", lambda *_: self._on_manual_color_change())
         # Apply weather/time the instant the selection changes. A variable
         # trace is more reliable across platforms than a widget event.
         self.v_weather.trace_add("write", lambda *_: self._on_manual_theme_change())
@@ -989,21 +985,23 @@ class App:
         if self._alive(getattr(self, "swatch", None)):
             self.swatch.config(bg=self._swatch_color())
 
+    def _on_manual_color_change(self):
+        self._update_swatch()
+        self._on_override_change()
+
     def on_pick_color(self):
         init = self._swatch_color()
         rgb, _hex = colorchooser.askcolor(color=init, title="Pick accent colour")
         if rgb:
             self.v_color.set(",".join(str(int(v)) for v in rgb))
-            self._on_override_change()
 
     def _on_auto_color(self):
         self.v_color.set("auto")
-        self._on_override_change()
 
     # --- live apply ----------------------------------------------------
     def _on_override_change(self):
         """A manual override changed — apply it right away."""
-        self._schedule_auto_apply("Settings updated")
+        self._schedule_auto_apply("Settings updated", refresh_card=True)
 
     def _on_manual_theme_change(self):
         self._schedule_auto_apply("Settings updated", refresh_card=True)
@@ -1154,6 +1152,7 @@ class App:
         self.timer_label = None
         self.clock_settings = None
         self.btn_clock_extra = None
+        self.btn_clock_reset = None
 
     def _build_music_frame(self, parent):
         page = ttk.Frame(parent, padding=12)
@@ -1307,8 +1306,10 @@ class App:
         self.btn_clock_extra = ttk.Button(ctl, text="Skip", style="Ghost.TButton",
                                           command=self.on_clock_extra)
         self.btn_clock_extra.pack(side="left", padx=4)
-        ttk.Button(ctl, text="Reset", style="Ghost.TButton",
-                   command=self.on_clock_reset).pack(side="left", padx=4)
+        self.btn_clock_reset = ttk.Button(
+            ctl, text="Reset", style="Ghost.TButton",
+            command=self.on_clock_reset)
+        self.btn_clock_reset.pack(side="left", padx=4)
 
         # Per-mode settings, rebuilt when the mode changes.
         wrap = _card(page)
@@ -1347,12 +1348,14 @@ class App:
         if not self._alive(self.btn_clock_extra):
             return
         m = self.v_clockmode.get()
-        if m == "pomodoro":
-            self.btn_clock_extra.config(text="Skip", state="normal")
-        elif m == "stopwatch":
-            self.btn_clock_extra.config(text="Lap", state="normal")
-        else:
-            self.btn_clock_extra.config(text="Skip", state="disabled")
+        if m == "timer":
+            self.btn_clock_extra.pack_forget()
+            return
+        text = "Skip" if m == "pomodoro" else "Lap"
+        self.btn_clock_extra.config(text=text, state="normal")
+        if not self.btn_clock_extra.winfo_manager():
+            self.btn_clock_extra.pack(
+                side="left", padx=4, before=self.btn_clock_reset)
 
     def _rebuild_clock_settings(self):
         if not self._alive(self.clock_settings):

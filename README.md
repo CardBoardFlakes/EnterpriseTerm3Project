@@ -84,7 +84,10 @@ python tests.py             # run the test suite
 
 GUI and background modes may be open together. They share one active engine,
 so opening the settings window does not duplicate or silence ambient playback;
-GUI changes wake the owner and still apply automatically.
+GUI changes wake the owner and still apply automatically. The open window also
+repaints locally, so profile, manual theme, Dark/Light, seasonal, and
+high-contrast changes remain immediate when the background process owns the
+engine.
 
 ---
 
@@ -157,7 +160,7 @@ pip install ruff
 python3 -m ruff check .      # 0 issues
 ```
 
-A 446-check headless test suite covering config,
+A 453-check headless test suite covering config,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
 / warmth / reliable original restoration, sound selection / variants /
