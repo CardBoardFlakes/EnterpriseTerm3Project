@@ -43,6 +43,9 @@ and exits — use `--background` for the headless loop instead.
 
 Ambient sound should loop continuously. The engine retries mixer initialisation
 after temporary device errors and restarts a dropped loop within a few seconds.
+With **Pause ambient when other audio is playing** selected, Flow checks every
+five seconds and resumes after other output ends. On Windows this needs `pycaw`;
+macOS uses built-in CoreAudio and needs no extra package.
 
 ---
 

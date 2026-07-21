@@ -107,12 +107,15 @@ that behavior to detectable external audio:
 Flow checks for audio changes every five seconds while this option is enabled,
 then resumes ambience after the other audio stops.
 
-- **macOS** — Spotify / Apple Music that are already running (their player
-  state is `playing`). Browser/YouTube audio can't be detected this way.
+- **macOS** — CoreAudio reports active output from browsers, meeting apps,
+  Spotify, Apple Music, and other audio-producing processes. Older macOS
+  versions fall back to Spotify / Apple Music player state.
 - **Windows** — essentially any app, if [`pycaw`](https://pypi.org/project/pycaw/)
   is installed (`pip install pycaw`); without it, external audio is not detected.
 
 Flow music priority works without `pycaw` and without the external-audio option.
+If GUI and run-at-login background modes overlap, only one Flow process owns
+ambient playback.
 
 ---
 

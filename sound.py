@@ -13,6 +13,7 @@ import math
 import random
 import struct
 import threading
+import tempfile
 import time
 import wave
 
@@ -43,6 +44,56 @@ _current_channel = None
 _current_path = None      # path of the sound currently playing (for dedup)
 _current_volume = 0.25
 _music_prev_vol = None     # music-stream volume saved while a chime ducks it
+_ambient_lock_file = None
+_ambient_lock_path = os.path.join(
+    tempfile.gettempdir(),
+    f"flow-ambient-{hashlib.sha256(SOUNDS_DIR.encode()).hexdigest()[:16]}.lock")
+
+
+def _claim_ambient_lock():
+    """Allow one GUI/background process to own ambient playback."""
+    global _ambient_lock_file
+    if _ambient_lock_file is not None:
+        return True
+    lock_file = None
+    try:
+        lock_file = open(_ambient_lock_path, "a+b")
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+        lock_file.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, IOError):
+        if lock_file is not None:
+            lock_file.close()
+        return False
+    _ambient_lock_file = lock_file
+    return True
+
+
+def _release_ambient_lock():
+    global _ambient_lock_file
+    lock_file = _ambient_lock_file
+    if lock_file is None:
+        return
+    try:
+        lock_file.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    except (OSError, IOError):
+        pass
+    lock_file.close()
+    _ambient_lock_file = None
 
 
 def _ensure_mixer():
@@ -213,6 +264,9 @@ def play_sound(file: str, volume_pct=None, loop=True):
             print(f"[sound] Sound file not found, skipping: {file!r}")
             return False
 
+    if loop and not _claim_ambient_lock():
+        return False
+
     # For a looping sound, don't restart the same file if it's already playing.
     # (pygame's Sound objects forbid custom attributes, so we track the path
     # ourselves.) One-shot plays always fire — that's the point.
@@ -226,6 +280,9 @@ def play_sound(file: str, volume_pct=None, loop=True):
             current_sound.stop()
         except Exception:
             pass
+        current_sound = None
+        _current_channel = None
+        _current_path = None
 
     try:
         snd = _mixer.Sound(file)
@@ -233,6 +290,8 @@ def play_sound(file: str, volume_pct=None, loop=True):
         channel = snd.play(loops=-1 if loop else 0)
         if channel is None:
             print(f"[sound] No mixer channel available for {file!r}")
+            if loop:
+                _release_ambient_lock()
             return False
         current_sound = snd
         _current_channel = channel
@@ -241,6 +300,8 @@ def play_sound(file: str, volume_pct=None, loop=True):
         return True
     except Exception as e:
         print(f"[sound] Failed to play {file!r}: {e}")
+        if loop:
+            _release_ambient_lock()
         return False
 
 
@@ -326,6 +387,7 @@ def stop_sound():
     current_sound = None
     _current_channel = None
     _current_path = None
+    _release_ambient_lock()
 
 
 # ---------------------------------------------------------

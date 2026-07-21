@@ -622,7 +622,8 @@ def test_sound():
                 return self.loaded
 
         old = (sound._ensure_mixer, sound._mixer, sound.current_sound,
-               sound._current_channel, sound._current_path)
+               sound._current_channel, sound._current_path,
+               sound._claim_ambient_lock)
         try:
             mixer = FakeMixer()
             sound._ensure_mixer = lambda: True
@@ -634,9 +635,14 @@ def test_sound():
             check("active channel reports playing", sound.ambient_is_playing() is True)
             mixer.loaded.channel.busy = False
             check("dropped channel reports stopped", sound.ambient_is_playing() is False)
+            sound.stop_sound()
+            sound._claim_ambient_lock = lambda: False
+            check("second process cannot start ambient",
+                  sound.play_sound(sample, loop=True) is False)
         finally:
             (sound._ensure_mixer, sound._mixer, sound.current_sound,
-             sound._current_channel, sound._current_path) = old
+             sound._current_channel, sound._current_path,
+             sound._claim_ambient_lock) = old
 
 
 def test_music():
@@ -1853,9 +1859,24 @@ def test_audiocheck():
         audiocheck._macos_playing, audiocheck._windows_playing = o_mac, o_win
         _sys.platform = o_plat
 
-    # macOS probe: not-running app => not playing; running + "playing" => True.
-    o_run = _sp.run
+    # macOS CoreAudio probe detects any other process with active output.
+    o_core = audiocheck._macos_coreaudio_processes
     try:
+        own = os.getpid()
+        audiocheck._macos_coreaudio_processes = lambda: [(own, True)]
+        check("own macOS audio is ignored", audiocheck._macos_playing() is False)
+        audiocheck._macos_coreaudio_processes = lambda: [(own, True), (own + 1, True)]
+        check("other macOS output is detected", audiocheck._macos_playing() is True)
+        audiocheck._macos_coreaudio_processes = lambda: [(own + 1, False)]
+        check("idle macOS audio process is ignored", audiocheck._macos_playing() is False)
+    finally:
+        audiocheck._macos_coreaudio_processes = o_core
+
+    # Older-macOS fallback: not-running app => not playing; running + playing.
+    o_run = _sp.run
+    o_core = audiocheck._macos_coreaudio_processes
+    try:
+        audiocheck._macos_coreaudio_processes = lambda: None
         class _R:
             def __init__(self, out):
                 self.stdout = out
@@ -1869,9 +1890,10 @@ def test_audiocheck():
             state["n"] += 1
             return _R("true") if state["n"] % 2 == 1 else _R("playing")
         _sp.run = _seq
-        check("running + playing => True", audiocheck._macos_playing() is True)
+        check("fallback running + playing => True", audiocheck._macos_playing() is True)
     finally:
         _sp.run = o_run
+        audiocheck._macos_coreaudio_processes = o_core
 
     # Windows probe returns None when pycaw isn't installed (import fails).
     if _sys.platform != "win32":

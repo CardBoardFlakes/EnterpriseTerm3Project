@@ -53,9 +53,9 @@ live-apply). Both must be kept consistent when you change behaviour.
 | `theme.py` | Colour maths: weather base, time-of-day phases, `sky_light`, seasons, high-contrast, accent/appearance apply |
 | `wallpaper.py` | Stdlib PNG generation (gradient + patterns + sun/moon/stars), set desktop, archive/restore original |
 | `profiles.py` | Focus/Creativity/Relax mood overlays |
-| `sound.py` | Ambient selection + variants + pygame playback + placeholder synth |
+| `sound.py` | Ambient selection + variants + pygame playback + cross-process playback lock + placeholder synth |
 | `music.py` | Background music player (pygame `mixer.music`) + stdlib-generated starter tracks |
-| `audiocheck.py` | Best-effort "is other audio playing" (auto-duck) |
+| `audiocheck.py` | Other-process output detection (CoreAudio on macOS, optional pycaw on Windows) |
 | `pomodoro.py`, `clocks.py` | Timers |
 | `tasks.py` | Task/schedule store (`tasks.json`) |
 | `activity.py`, `autostart.py` | Idle detection; run-at-login |
@@ -68,6 +68,8 @@ live-apply). Both must be kept consistent when you change behaviour.
 - **Work only on change**: the engine re-applies theme/wallpaper/sound only
   when the visible result changes (signatures/guards). Don't add unconditional
   per-tick OS writes.
+- **Only one process owns ambient playback.** GUI and run-at-login background
+  engines may overlap; preserve `sound.py`'s cross-process lock.
 - **`enabled` is select-all UI state, not an engine gate.** Every entry under
   `features` works independently while `enabled` is false. Clearing select-all
   clears those entries and must still run wallpaper/sound cleanup.

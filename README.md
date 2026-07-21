@@ -47,7 +47,7 @@ See the full walkthrough in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 | **Independent features** | **Enable everything** selects or clears all features at once. Leave it off and enable accent, wallpaper, ambience, or reminders individually. |
 | **Ambient sound** | Relaxing weather/time soundscapes that loop continuously. Add your own files or variants; windy skies use the cloudy ambience. |
 | **Music player** | Two original sample tracks appear automatically in an empty library. Add your own songs (mp3/ogg/wav/flac/m4a), with playlist controls and a separate volume. |
-| **Audio priority** | Flow music always pauses ambience. An optional setting also pauses ambience for detectable external audio (best-effort Spotify/Apple Music on macOS, or any app on Windows with `pycaw`). |
+| **Audio priority** | Flow music always pauses ambience. An optional setting also pauses ambience for other app audio (CoreAudio on macOS, or `pycaw` on Windows). |
 | **Timers** | A Timers tab with three modes: **Pomodoro** (work/break cycles), a plain **countdown Timer**, and a **Stopwatch** with laps. |
 | **Tasks & schedules** | Daily or one-off reminders that show a notification or play a chime. |
 | **Live weather panel** | Temperature, feels-like, humidity, UV index (with risk band), wind + gusts, rain chance and pressure. |
@@ -152,7 +152,7 @@ pip install ruff
 python3 -m ruff check .      # 0 issues
 ```
 
-A 416-check headless test suite covering config,
+A 420-check headless test suite covering config,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
 / warmth / reliable original restoration, sound selection / variants /
