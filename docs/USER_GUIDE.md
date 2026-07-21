@@ -27,14 +27,15 @@ python main.py
 
 - **requests** — live weather from Open-Meteo. Without it, the app falls back to
   a sensible default (clear sky, fixed sunrise/sunset) and everything still works.
-- **pygame** — ambient sound playback. Without it, sound is silently skipped.
+- **pygame** — ambient sound and music playback. Without it, audio is silently
+  skipped.
 
 `tkinter` (the GUI toolkit) ships with Python but is not a pip package. If the
 window doesn't open, see [Troubleshooting](TROUBLESHOOTING.md#the-gui-wont-open).
 
 On first launch the app uses built-in defaults. It writes `config.json` when a
-setting first changes and, when sound first plays, synthesises any missing base
-audio loops into `sounds/`.
+setting first changes, synthesises missing base ambience into `sounds/` when
+needed, and puts two original sample tracks into an empty `music/` library.
 
 ---
 
@@ -53,12 +54,12 @@ the **temperature**, and a live-data line: **feels-like, humidity, UV index
 location and data source (`live` / `fallback`). Press **↻ Refresh weather** to
 fetch again.
 
-The heading names both values explicitly, for example **Weather: Rain · Time:
-Afternoon**. Night and dusk are time-of-day phases, not weather conditions.
+The heading uses a compact condition-and-phase format, for example **Rain ·
+afternoon**. Night and dusk are time-of-day phases, not weather conditions.
 
 > Temperature, humidity, UV, wind, rain chance, and pressure remain the live
 > outside readings. A manual weather override changes the condition shown and
-> the resulting theme, wallpaper, and sound; `(manual)` marks that condition.
+> the resulting theme, wallpaper, and sound; `manual` marks that condition.
 > A manual time override changes the visual time phase while measurements stay
 > live.
 
@@ -77,7 +78,9 @@ gentler.
   silences ambient sound and stops all further theme/wallpaper updates (it
   leaves the current wallpaper and accent as they are). Turning it back on
   enables and resumes every feature.
-- *Dynamic accent theme* — OS accent colour follows the weather.
+- *System accent follows theme* — OS accent follows weather and time unless an
+  exact colour is picked below. It changes the Windows taskbar/title colour or
+  the nearest named macOS accent; existing macOS apps may need relaunching.
 - *Weather wallpaper* — desktop background follows the weather.
 - *Ambient sound* — weather/time soundscape.
 
@@ -96,9 +99,9 @@ while the master switch is on and are managed in **Focus & Tasks**.
 - *Accent colour* — `auto`, or an exact `r,g,b`. Use **Pick…** for a colour
   picker (the swatch previews your choice) or **Auto** to clear it.
 
-> (On macOS the *accent* colour snaps to the nearest named system accent,
-> so daytime phases may look similar there; the **wallpaper** shows the change
-> clearly.)
+> (On macOS the *accent* colour snaps to the nearest named system accent, so
+> nearby computed colours can select the same named accent. Existing apps may
+> need relaunching; the swatch shows the computed colour immediately.)
 
 ### Settings tab
 
@@ -116,8 +119,8 @@ cards do not fit; the scrollbar hides when everything is visible.
   and automatic or fixed hemisphere.
 - **Device appearance** — follow time of day or lock the device and Flow window
   to Dark or Light.
-- **Accessibility** — normal or high-contrast colours. A known Dashboard repaint
-  issue is documented in [Troubleshooting](TROUBLESHOOTING.md#the-dashboard-is-blank-in-high-contrast-mode).
+- **Accessibility** — normal or high-contrast colours. High contrast uses a
+  black, white, and yellow palette throughout both tabs.
 - **Engine** — how often the app steps (`Tick`) and refetches weather, the city
   used for live weather, multi-monitor wallpaper, and **Run automatically at
   login**.
@@ -145,8 +148,8 @@ close it. Full details in the [Tasks & timer guide](TASKS_AND_TIMER.md).
   with laps.
 - **To-Do & Schedules** — a list of your tasks plus a form to add daily or
   one-off reminders that show a notification or play a chime.
-- **Music** — add local songs, choose a track, and use play/pause, stop,
-  previous/next, and separate volume controls.
+- **Music** — start with either of the two generated sample tracks, add local
+  songs, and use play/pause, stop, previous/next, and separate volume controls.
 
 ---
 
@@ -185,6 +188,7 @@ ambience during that cycle, but audio ends when the process exits.
 | Tasks | `tasks.json` (in the project folder) |
 | Generated wallpaper | `~/.environment_theme_controller/` |
 | Ambient sound files | `sounds/` (in the project folder) |
+| Music and starter samples | `music/` (in the project folder) |
 
 To change your **location** for live weather, pick your **City** from the
 dropdown in Settings → Engine. For a city that isn't listed, edit `location`

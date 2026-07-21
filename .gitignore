@@ -7,3 +7,6 @@ tasks.json
 
 # Generated ambient placeholders (synthesised on first run)
 sounds/
+
+# User music and generated sample tracks
+music/

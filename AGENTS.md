@@ -51,10 +51,10 @@ live-apply). Both must be kept consistent when you change behaviour.
 | `config.py` | `DEFAULTS`, load/save, choice lists, `feature_enabled`, city list |
 | `weather.py` | Open-Meteo fetch, condition classification, overrides, offline fallback |
 | `theme.py` | Colour maths: weather base, time-of-day phases, `sky_light`, seasons, high-contrast, accent/appearance apply |
-| `wallpaper.py` | Stdlib PNG generation (gradient + patterns + sun/moon), set desktop |
+| `wallpaper.py` | Stdlib PNG generation (gradient + patterns + sun/moon/stars), set desktop, archive/restore original |
 | `profiles.py` | Focus/Creativity/Relax mood overlays |
 | `sound.py` | Ambient selection + variants + pygame playback + placeholder synth |
-| `music.py` | Background music player (pygame `mixer.music`) |
+| `music.py` | Background music player (pygame `mixer.music`) + stdlib-generated starter tracks |
 | `audiocheck.py` | Best-effort "is other audio playing" (auto-duck) |
 | `pomodoro.py`, `clocks.py` | Timers |
 | `tasks.py` | Task/schedule store (`tasks.json`) |
@@ -103,11 +103,18 @@ live-apply). Both must be kept consistent when you change behaviour.
   doesn't reach the normal desktop. The engine periodically re-applies
   (`wallpaper_refresh_seconds`) to compensate — don't remove that.
 - **macOS accent** only shows in apps launched *after* it's set, and snaps to
-  ~8 named colours. Judge theme changes by the wallpaper, not the accent.
+  ~8 named colours. A manual accent overrides the computed system accent.
+- **Hidden themed canvas content on macOS** may remain logically mapped but
+  visually blank after a palette change. The tab-change repaint in `gui.py`
+  remaps the canvas window and exposes its ttk descendants; preserve it.
 - **Never delete the displayed wallpaper file.** `wallpaper._cleanup_old`
   protects the just-built file, the last-applied file (`_applied_path`), and a
   few recent ones — otherwise the desktop reverts to the OS default when a set
   fails. Keep that invariant.
+- **Original wallpaper restoration must be durable.** The path captured from
+  macOS can point into a temporary folder, so `capture_original_once` archives
+  the file in `~/.environment_theme_controller/`; do not revert to path-only
+  storage.
 - **`engine.notify()` interpolates task titles into osascript/PowerShell** —
   a known injection sink if `tasks.json` is untrusted. Sanitize if you touch it.
 - **Gradual transitions**: `engine` eases the displayed colour toward the target

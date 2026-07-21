@@ -35,7 +35,7 @@ See the full walkthrough in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 
 | Feature | Summary |
 |---|---|
-| **Dynamic theme** | OS accent colour follows the weather. Windows: taskbar accent. macOS: Dark/Light by time of day + nearest named accent. |
+| **System accent follows theme** | OS accent colour follows the weather and time unless you pick a manual colour. Windows changes the taskbar/title accent; macOS uses the nearest named accent and existing apps may need relaunching. |
 | **Time-of-day light** | Theme + wallpaper move through the day's light — sunrise, morning, midday, afternoon, sunset, dusk, night — warm and low at the edges, bright and neutral at noon, deep blue at night. |
 | **Gradual transitions** | Time-of-day colour changes continuously and weather changes cross-fade over a few seconds — no sudden jumps. |
 | **Seasons** | A seasonal wash nudges the palette (fresh-green spring → golden summer → amber autumn → cool-blue winter); hemisphere auto-detected from your latitude. |
@@ -45,12 +45,12 @@ See the full walkthrough in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 | **Dark/Light lock** | Force the device (and app) to Dark or Light, or let it follow the time of day. |
 | **Weather wallpaper** | A sky-gradient background per condition, with weather patterns (rain, sun, clouds, stars) and a cosy warm tint when it's cold. |
 | **Ambient sound** | Relaxing weather/time soundscapes that loop continuously. Add your own files or variants; windy skies use the cloudy ambience. |
-| **Music player** | Play your own downloaded songs (mp3/ogg/wav/flac/m4a) in the background, with playlist controls and a separate volume. |
+| **Music player** | Two original sample tracks appear automatically in an empty library. Add your own songs (mp3/ogg/wav/flac/m4a), with playlist controls and a separate volume. |
 | **Audio priority** | Flow music always pauses ambience. An optional setting also pauses ambience for detectable external audio (best-effort Spotify/Apple Music on macOS, or any app on Windows with `pycaw`). |
 | **Timers** | A Timers tab with three modes: **Pomodoro** (work/break cycles), a plain **countdown Timer**, and a **Stopwatch** with laps. |
 | **Tasks & schedules** | Daily or one-off reminders that show a notification or play a chime. |
 | **Live weather panel** | Temperature, feels-like, humidity, UV index (with risk band), wind + gusts, rain chance and pressure. |
-| **Manual overrides** | Force a weather condition, time of day, or exact accent colour. Measurements stay live; a forced weather label is marked `(manual)`. |
+| **Manual overrides** | Force a weather condition, time of day, or exact accent colour. Measurements stay live; a forced weather label is marked `manual`. Night is a time-of-day choice, not a weather condition. |
 | **Time-of-day UI** | The app window follows the day with a light theme by day and dark theme at night; its palette uses the active theme accent when the mode changes. |
 | **Location privacy** | No automatic location detection; only the coordinates for your selected city are sent for weather data. |
 | **Run at login** | Optional auto-start (macOS LaunchAgent / Windows Run key). |
@@ -123,7 +123,7 @@ town's coordinates rather than your exact address.
 | `wallpaper.py` | Generate + set the weather wallpaper (patterns, warmth, drift) |
 | `profiles.py` | Focus / Creativity / Relax mood profiles (colour + settings overlay) |
 | `sound.py` | Ambient sound selection, variants, playback, placeholder synth |
-| `music.py` | Background music player for your own songs |
+| `music.py` | Background music player; creates starter samples for an empty library |
 | `audiocheck.py` | Best-effort detection of audio from other apps (for auto-duck) |
 | `pomodoro.py` | Pomodoro timer state machine |
 | `clocks.py` | Stopwatch and countdown timer state machines |
@@ -151,10 +151,11 @@ pip install ruff
 python3 -m ruff check .      # 0 issues
 ```
 
-A 388-check headless test suite covering config,
+A 405-check headless test suite covering config,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
-/ warmth, sound selection / variants / continuous-loop recovery, tasks,
+/ warmth / reliable original restoration, sound selection / variants /
+continuous-loop recovery, starter music generation, tasks,
 autostart, all three timer modes, the GUI
 value mapping + display helpers (icons, temperature, UV band, live-data line),
 idle detection, other-audio detection, desktop notifications, and the engine's

@@ -20,7 +20,7 @@ import threading
 import datetime
 
 import tkinter as tk
-from tkinter import ttk, messagebox, colorchooser, filedialog
+from tkinter import ttk, messagebox, colorchooser, filedialog, font as tkfont
 
 import config
 import weather
@@ -229,11 +229,11 @@ def _fmt_details(d):
 
 
 def _weather_summary(condition, phase, manual=False):
-    """Unambiguous dashboard label for weather condition and time phase."""
+    """Compact dashboard label: weather first, then time of day."""
     weather_text = (condition or "unknown").capitalize()
-    phase_text = (phase or "unknown").capitalize()
-    suffix = " (manual)" if manual else ""
-    return f"Weather: {weather_text}{suffix}  ·  Time: {phase_text}"
+    phase_text = (phase or "unknown").lower()
+    suffix = "  ·  manual" if manual else ""
+    return f"{weather_text}  ·  {phase_text}{suffix}"
 
 
 def _shift_iso_date(value, days, today=None):
@@ -252,6 +252,14 @@ def _sync_feature_vars(enabled, variables):
         variable.set(bool(enabled))
 
 
+def _largest_fitting_font(text, available_width, measure, sizes=range(40, 19, -2)):
+    """Largest font size whose measured text fits the available width."""
+    for size in sizes:
+        if measure(text, size) <= available_width:
+            return size
+    return min(sizes)
+
+
 def _card(parent, title=None):
     """A white padded panel; returns the inner content frame."""
     outer = ttk.Frame(parent, style="Card.TFrame", padding=1)
@@ -261,6 +269,20 @@ def _card(parent, title=None):
     if title:
         ttk.Label(inner, text=title, style="CardH.TLabel").pack(anchor="w", pady=(0, 8))
     return inner
+
+
+def _responsive_label(parent, *, padding=0, **kwargs):
+    """Label whose wrap width tracks its container instead of clipping."""
+    label = ttk.Label(parent, wraplength=360, **kwargs)
+
+    def resize(event):
+        try:
+            label.configure(wraplength=max(120, event.width - padding))
+        except tk.TclError:
+            pass
+
+    parent.bind("<Configure>", resize, add="+")
+    return label
 
 
 # ---------------------------------------------------------
@@ -282,6 +304,8 @@ class App:
         self.lbl_cycles = None
         self.music_list = None
         self.btn_music_play = None
+        self.timer_label = None
+        self.feature_checks = []
 
         root.title("Flow")
         root.geometry("600x780")
@@ -291,9 +315,12 @@ class App:
         self._apply_busy = False     # a preview tick is in flight
         self._auto_apply_job = None  # coalesce rapid slider/spinbox changes
         self._scroll_canvases = []   # tk.Canvas backing the scrollable tabs
+        self._scroll_items = {}      # canvas -> embedded content item
+        self._effective_swatch = None
         self._install_styles()
 
         self._build_vars()
+        self._persist_master_consistency()
         self._build_ui()
         self._bind_auto_apply()
         self._start_engine()
@@ -310,6 +337,9 @@ class App:
         self.v_wallpaper = tk.BooleanVar(value=f.get("wallpaper", True))
         self.v_sound = tk.BooleanVar(value=f.get("ambient_sound", True))
         self.v_tasks = tk.BooleanVar(value=f.get("tasks", True))
+        if not self.v_enabled.get():
+            _sync_feature_vars(
+                False, (self.v_theme, self.v_wallpaper, self.v_sound, self.v_tasks))
         self.v_tint = tk.DoubleVar(value=float(c.get("weather_tint_strength", 40)))
         self.v_volume = tk.DoubleVar(value=float(c.get("sound_volume", 25)))
         self._vol_save_job = None            # debounced save for the volume slider
@@ -366,6 +396,14 @@ class App:
         self.lap_box = None             # stopwatch laps list (when shown)
 
     # --- styling / time-of-day UI theme --------------------------------
+    def _persist_master_consistency(self):
+        """Repair legacy configs whose child features stayed on under master off."""
+        if self.v_enabled.get():
+            return
+        if any(self.cfg.get("features", {}).values()):
+            self._collect()
+            config.save_config(self.cfg)
+
     def _install_styles(self):
         self.style = ttk.Style()
         try:
@@ -498,6 +536,7 @@ class App:
         canvas.configure(yscrollcommand=set_scrollbar)
         canvas.pack(fill="both", expand=True)
         self._scroll_canvases.append(canvas)
+        self._scroll_items[canvas] = iid
 
         inner.bind("<Configure>",
                    lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -509,6 +548,48 @@ class App:
         canvas.bind("<Configure>", on_canvas)
         # Wheel/trackpad scrolling is handled app-wide by _on_mousewheel.
         return inner
+
+    def _on_main_tab_changed(self, _event=None):
+        """Force macOS to repaint the newly exposed canvas after style changes."""
+        self.root.after_idle(self._redraw_scroll_content)
+        # Aqua reports the tab mapped before its native view is ready to draw.
+        # A second pass after that view settles fixes the intermittent blank
+        # canvas that an idle-only callback leaves behind.
+        self.root.after(80, self._redraw_scroll_content)
+
+    def _redraw_scroll_content(self):
+        for canvas in self._scroll_canvases:
+            try:
+                if not canvas.winfo_ismapped():
+                    continue
+                item = self._scroll_items.get(canvas)
+                if item:
+                    # Aqua can leave a styled ttk tree logically mapped but
+                    # visually blank when its Notebook tab was hidden during
+                    # a theme change.  Detaching and reattaching the existing
+                    # frame forces a real native remap; merely hiding the
+                    # canvas item is not sufficient on macOS.
+                    inner = canvas.nametowidget(canvas.itemcget(item, "window"))
+                    yview = canvas.yview()
+                    canvas.itemconfigure(item, window="")
+                    canvas.update_idletasks()
+                    canvas.itemconfigure(item, window=inner,
+                                         width=canvas.winfo_width())
+                    if yview:
+                        canvas.yview_moveto(yview[0])
+                    # The native macOS renderer also needs each ttk
+                    # descendant exposed.  Without this, geometry and style
+                    # lookups are correct but the old pixels remain blank.
+                    pending = [inner]
+                    while pending:
+                        widget = pending.pop()
+                        pending.extend(widget.winfo_children())
+                        widget.event_generate("<Expose>")
+                        widget.update_idletasks()
+                canvas.configure(scrollregion=canvas.bbox("all"))
+                canvas.event_generate("<Expose>")
+            except tk.TclError:
+                continue
 
     def _on_mousewheel(self, event):
         """
@@ -571,6 +652,8 @@ class App:
             self._ui_key = key
             self.pal = pal
             self._configure_styles()
+            self.root.after_idle(self._redraw_scroll_content)
+            self.root.after(80, self._redraw_scroll_content)
         except Exception as e:
             print(f"[gui] theme update skipped: {e}")
 
@@ -591,9 +674,12 @@ class App:
                    command=self.open_tools).pack(side="right", padx=6)
 
         nb = ttk.Notebook(self.root)
+        self.main_notebook = nb
         nb.pack(fill="both", expand=True, padx=12, pady=(4, 6))
         nb.add(self._tab_dashboard(nb), text="  Dashboard  ")
         nb.add(self._tab_settings(nb), text="  Settings  ")
+        nb.bind("<<NotebookTabChanged>>", self._on_main_tab_changed)
+        self._set_feature_controls_state(self.v_enabled.get())
 
         bar = ttk.Frame(self.root, padding=(12, 4))
         bar.pack(fill="x", side="bottom")
@@ -625,8 +711,9 @@ class App:
         ttk.Label(mid, textvariable=self.v_wcond, style="Cond.TLabel").pack(anchor="w")
         ttk.Label(mid, textvariable=self.v_wsub, style="Muted.TLabel").pack(anchor="w")
         ttk.Label(top, textvariable=self.v_wtemp, style="Temp.TLabel").pack(side="right")
-        ttk.Label(wc, textvariable=self.v_wdetails, style="Muted.TLabel",
-                  wraplength=520).pack(anchor="w", pady=(8, 0))
+        _responsive_label(
+            wc, textvariable=self.v_wdetails, style="Muted.TLabel"
+        ).pack(anchor="w", pady=(8, 0))
         ttk.Button(wc, text="↻ Refresh weather", style="Ghost.TButton",
                    command=self.refresh_weather).pack(anchor="e", pady=(4, 0))
 
@@ -638,21 +725,33 @@ class App:
             ttk.Radiobutton(prow, text=txt, value=val, variable=self.v_profile,
                             style="Card.TRadiobutton",
                             command=self._on_override_change).pack(side="left", padx=(0, 10))
-        ttk.Label(pc, style="Muted.TLabel", wraplength=520,
-                  text="A profile shifts the whole vibe — Focus is calm & quiet, "
-                       "Creativity vivid & lively, Relax warm & gentle.").pack(anchor="w", pady=(6, 0))
+        _responsive_label(
+            pc, style="Muted.TLabel",
+            text="A profile shifts the whole vibe — Focus is calm & quiet, "
+                 "Creativity vivid & lively, Relax warm & gentle."
+        ).pack(anchor="w", pady=(6, 0))
 
         # Master + features ----------------------------------------------
         fc = _card(body, "Features")
         ttk.Checkbutton(fc, text="Enable everything (master switch)",
                         style="Card.TCheckbutton", command=self.on_master_toggle,
                         variable=self.v_enabled).pack(anchor="w", pady=(0, 6))
-        for text, var, cmd in [("🎨  Dynamic accent theme", self.v_theme, None),
+        for text, var, cmd in [("🎨  System accent follows theme", self.v_theme,
+                                self._on_override_change),
                                ("🖼  Weather wallpaper", self.v_wallpaper, self._on_override_change),
                                ("🔊  Ambient sound", self.v_sound, self.on_sound_toggle)]:
             kw = {"command": cmd} if cmd else {}
-            ttk.Checkbutton(fc, text=text, style="Card.TCheckbutton",
-                            variable=var, **kw).pack(anchor="w", pady=1)
+            checkbutton = ttk.Checkbutton(
+                fc, text=text, style="Card.TCheckbutton", variable=var, **kw)
+            checkbutton.pack(anchor="w", pady=1)
+            self.feature_checks.append(checkbutton)
+        _responsive_label(
+            fc, style="Muted.TLabel",
+            text="System accent changes the Windows taskbar/title colour or the "
+                 "nearest named macOS accent. Auto accent colour follows weather "
+                 "and time; a picked colour below overrides it. Existing macOS "
+                 "apps may need relaunching."
+        ).pack(anchor="w", pady=(6, 0))
 
         # Manual theme changer -------------------------------------------
         mcard = _card(body, "Manual theme changer")
@@ -701,10 +800,12 @@ class App:
                         command=self._on_override_change).pack(anchor="w", pady=(6, 0))
         ttk.Button(sc, text="🎵  Sound files… (names + open folder)", style="Ghost.TButton",
                    command=self.on_manage_sounds).pack(anchor="w", pady=(8, 0))
-        ttk.Label(sc, style="Muted.TLabel", wraplength=460,
-                  text="Ambience loops continuously. Add several clips per weather "
-                       "for variety, e.g. rain.wav and rain2.wav — a different one "
-                       "can be chosen when the weather changes.").pack(anchor="w", pady=(6, 0))
+        _responsive_label(
+            sc, style="Muted.TLabel",
+            text="Ambience loops continuously. Add several clips per weather "
+                 "for variety, e.g. rain.wav and rain2.wav — a different one "
+                 "can be chosen when the weather changes."
+        ).pack(anchor="w", pady=(6, 0))
 
         # Seasons & transitions ------------------------------------------
         st = _card(body, "Seasons & transitions")
@@ -725,9 +826,11 @@ class App:
         ttk.Label(dr, text="Dark / Light", style="Card.TLabel", width=12).pack(side="left")
         ttk.Combobox(dr, textvariable=self.v_appearance, state="readonly", width=10,
                      values=config.APPEARANCE_CHOICES).pack(side="left")
-        ttk.Label(dc, style="Muted.TLabel", wraplength=460,
-                  text="auto follows the time of day. dark / light lock the whole "
-                       "device (and this window) to that mode.").pack(anchor="w", pady=(6, 0))
+        _responsive_label(
+            dc, style="Muted.TLabel",
+            text="auto follows the time of day. dark / light lock the whole "
+                 "device (and this window) to that mode."
+        ).pack(anchor="w", pady=(6, 0))
 
         # Accessibility ---------------------------------------------------
         ac = _card(body, "Accessibility")
@@ -735,9 +838,11 @@ class App:
         ttk.Label(ar, text="Mode", style="Card.TLabel", width=12).pack(side="left")
         ttk.Combobox(ar, textvariable=self.v_access, state="readonly", width=14,
                      values=config.ACCESSIBILITY_CHOICES).pack(side="left")
-        ttk.Label(ac, style="Muted.TLabel", wraplength=460,
-                  text="high_contrast forces bold, maximum-contrast colours and a "
-                       "black/white/yellow window, ignoring the time of day.").pack(anchor="w", pady=(6, 0))
+        _responsive_label(
+            ac, style="Muted.TLabel",
+            text="high_contrast forces bold, maximum-contrast colours and a "
+                 "black/white/yellow window, ignoring the time of day."
+        ).pack(anchor="w", pady=(6, 0))
 
         ec = _card(body, "Engine")
         ir = ttk.Frame(ec, style="Card.TFrame"); ir.pack(fill="x", pady=2)
@@ -820,6 +925,8 @@ class App:
         self.v_wdetails.set(_fmt_details(d))
         # Match the window's look to the time of day.
         if d.get("color") and d.get("brightness") is not None:
+            self._effective_swatch = tuple(d["color"])
+            self._update_swatch()
             self._theme_ui(d["color"], d["brightness"])
 
     # --- manual colour -------------------------------------------------
@@ -828,7 +935,8 @@ class App:
             r, g, b = [int(x) for x in self.v_color.get().split(",")]
             return f"#{r:02x}{g:02x}{b:02x}"
         except (ValueError, AttributeError):
-            return self.pal["CARD"]
+            return (_hex(self._effective_swatch) if self._effective_swatch
+                    else self.pal["CARD"])
 
     def _update_swatch(self):
         if self._alive(getattr(self, "swatch", None)):
@@ -987,6 +1095,7 @@ class App:
         self.lbl_cycles = None
         self.music_list = None
         self.btn_music_play = None
+        self.timer_label = None
         self.clock_settings = None
         self.btn_clock_extra = None
 
@@ -1015,9 +1124,11 @@ class App:
         ttk.Button(files, text="Add songs…", style="Ghost.TButton", command=self.on_music_add).pack(side="left")
         ttk.Button(files, text="Open music folder", style="Ghost.TButton", command=self.on_music_open).pack(side="left", padx=4)
         ttk.Button(files, text="Refresh", style="Ghost.TButton", command=self.on_music_refresh).pack(side="left")
-        ttk.Label(card, style="Muted.TLabel", wraplength=520,
-                  text="Drop .mp3 / .ogg / .wav files in the music folder (or Add songs…), "
-                       "then Play. Plays alongside the weather ambience.").pack(anchor="w", pady=(6, 0))
+        _responsive_label(
+            card, style="Muted.TLabel",
+            text="Drop .mp3 / .ogg / .wav files in the music folder (or Add songs…), "
+                 "then Play. Music pauses weather ambience while it plays."
+        ).pack(anchor="w", pady=(6, 0))
 
         self.on_music_refresh()
         self._update_music_label()
@@ -1126,7 +1237,11 @@ class App:
 
         # Shared big display + controls.
         disp = _card(page)
-        ttk.Label(disp, textvariable=self.v_timer, style="Timer.TLabel").pack(pady=(6, 2))
+        self.timer_label = ttk.Label(
+            disp, textvariable=self.v_timer, style="Timer.TLabel",
+            anchor="center", justify="center")
+        self.timer_label.pack(fill="x", pady=(6, 2))
+        disp.bind("<Configure>", lambda _event: self._fit_timer_text())
         self.lbl_cycles = ttk.Label(disp, text="", style="Muted.TLabel")
         self.lbl_cycles.pack()
         ctl = ttk.Frame(disp, style="Card.TFrame"); ctl.pack(pady=12)
@@ -1150,6 +1265,22 @@ class App:
     def _active_clock(self):
         return {"pomodoro": self.pomo, "timer": self.timer,
                 "stopwatch": self.stopwatch}[self.v_clockmode.get()]
+
+    def _fit_timer_text(self):
+        """Shrink long timer states enough to fit narrow Focus windows."""
+        if not self._alive(self.timer_label):
+            return
+        available = max(220, self.timer_label.winfo_width() - 12)
+        text = self.v_timer.get()
+
+        def measure(value, size):
+            return tkfont.Font(
+                root=self.root, family="Helvetica", size=size,
+                weight="bold").measure(value)
+
+        size = _largest_fitting_font(text, available, measure)
+        self.timer_label.configure(
+            font=("Helvetica", size, "bold"), wraplength=available)
 
     def _on_clockmode(self):
         self._rebuild_clock_settings()
@@ -1300,6 +1431,8 @@ class App:
     def _update_timer_label(self):
         active = self._active_clock()
         self.v_timer.set(active.label())
+        if self._alive(self.timer_label):
+            self.root.after_idle(self._fit_timer_text)
         if self._alive(self.lbl_cycles):
             m = self.v_clockmode.get()
             if m == "pomodoro":
@@ -1471,14 +1604,14 @@ class App:
 
     def on_master_toggle(self):
         """
-        Make the master switch take effect immediately: persist it and push it
-        to the running engine (which otherwise wouldn't see the change until the
-        next Save/Start). Turning it off silences ambience right away and stops
-        further updates; it leaves the current wallpaper/accent in place.
+        Persist the master switch and push it to the running engine immediately.
+        Turning it off silences ambience and stops further updates; it leaves
+        the current wallpaper/accent in place.
         """
         on = self.v_enabled.get()
         _sync_feature_vars(
             on, (self.v_theme, self.v_wallpaper, self.v_sound, self.v_tasks))
+        self._set_feature_controls_state(on)
         if on:
             # Enabling applies immediately (bypasses the redraw guard).
             self._apply_live("Enabled")
@@ -1495,6 +1628,15 @@ class App:
             self.v_status.set("Disabled — engine idle (wallpaper/accent left as-is).")
         else:
             self.v_status.set("Disabled.")
+
+    def _set_feature_controls_state(self, enabled):
+        """Prevent child toggles from appearing active while master is off."""
+        state = "normal" if enabled else "disabled"
+        for checkbutton in self.feature_checks:
+            try:
+                checkbutton.configure(state=state)
+            except tk.TclError:
+                pass
 
     def on_sound_toggle(self):
         """Turn ambient sound on/off *now* — unticking stops it immediately."""

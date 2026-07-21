@@ -8,7 +8,6 @@ working and prints a `[subsystem] …` note to the console.
 - [There's no sound](#theres-no-sound)
 - [The wallpaper isn't changing](#the-wallpaper-isnt-changing)
 - [The accent colour didn't change (macOS)](#the-accent-colour-didnt-change-macos)
-- [The Dashboard is blank in high-contrast mode](#the-dashboard-is-blank-in-high-contrast-mode)
 - [Weather is wrong or says "fallback"](#weather-is-wrong-or-says-fallback)
 - [Run-at-login didn't stick](#run-at-login-didnt-stick)
 - [Reset everything](#reset-everything)
@@ -57,9 +56,10 @@ after temporary device errors and restarts a dropped loop within a few seconds.
   still generated).
 - Check the console for `[wallpaper] Failed to set …`.
 
-Unticking **Weather wallpaper** restores the wallpaper Flow saved before its
-first change, when that original file still exists. Turning off the master
-switch instead leaves the current wallpaper and accent in place.
+Unticking **Weather wallpaper** restores the non-Flow wallpaper that was visible
+before Flow most recently took over. Flow archives a stable copy rather than
+relying on a temporary OS path. Turning off the master switch instead leaves
+the current wallpaper and accent in place.
 
 ### It only changes when I'm *not* in a fullscreen app (macOS)
 
@@ -80,15 +80,6 @@ This is expected: macOS apps read the accent colour **when they launch**.
 Already-open apps keep the old colour until relaunched. Dark/Light mode and the
 wallpaper update immediately. macOS also snaps the colour to the nearest *named*
 system accent (Blue, Purple, Graphite, …), so it won't be an exact RGB match.
-
----
-
-## The Dashboard is blank in high-contrast mode
-
-Known issue: after enabling **high_contrast** and switching between Settings and
-Dashboard, Dashboard content can repaint as an empty black panel even though
-its controls are still present. Switch to Settings → Accessibility, return the
-mode to **none**, and relaunch Flow if the Dashboard does not repaint.
 
 ---
 
@@ -122,8 +113,8 @@ Stop the app, then delete the state files. Defaults are used on next launch;
 reminder changes.
 
 Before deleting the generated-wallpaper folder, untick **Weather wallpaper** so
-Flow can restore the original desktop first. That folder also contains the
-saved path used for restoration.
+Flow can restore the original desktop first. That folder also contains Flow's
+archived copy used for restoration.
 
 macOS/Linux shell:
 

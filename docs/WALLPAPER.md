@@ -27,6 +27,11 @@ On the **Settings** tab, the **Wallpaper look** card controls generated images:
 Each weather condition has its own base colour and gradient, so clear, cloudy,
 rainy, stormy, and night skies all look distinct.
 
+Turning **Weather wallpaper** off restores the non-Flow wallpaper that was
+visible before Flow most recently took over. Flow keeps a stable local copy in
+`~/.environment_theme_controller/`, so restoration still works if macOS
+originally reported a temporary source path.
+
 ---
 
 ## Weather patterns

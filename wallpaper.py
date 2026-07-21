@@ -13,6 +13,7 @@ import struct
 import zlib
 import colorsys
 import subprocess
+import shutil
 
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".environment_theme_controller")
 
@@ -31,14 +32,52 @@ _agent_warmed = False
 # turning the weather-wallpaper feature off can put it back. Stored as a file
 # in CACHE_DIR so it survives app restarts.
 ORIGINAL_FILE = os.path.join(CACHE_DIR, "original_wallpaper.txt")
+ORIGINAL_COPY_STEM = "saved_original_wallpaper"
 
 
 def _is_ours(path: str) -> bool:
     """True if *path* is one of the wallpapers this app generated."""
     try:
-        return os.path.abspath(path).startswith(os.path.abspath(CACHE_DIR))
+        full = os.path.abspath(path)
+        return (os.path.dirname(full) == os.path.abspath(CACHE_DIR)
+                and os.path.basename(full).startswith("wallpaper_"))
     except Exception:
         return False
+
+
+def _archive_original(path):
+    """Keep a stable local copy so restoring never depends on a temp path."""
+    full = os.path.abspath(path)
+    if (os.path.dirname(full) == os.path.abspath(CACHE_DIR)
+            and os.path.basename(full).startswith(ORIGINAL_COPY_STEM)):
+        return full
+    ext = os.path.splitext(full)[1].lower()
+    if not ext or len(ext) > 8:
+        ext = ".img"
+    saved = os.path.join(CACHE_DIR, ORIGINAL_COPY_STEM + ext)
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    try:
+        shutil.copy2(full, saved)
+    except OSError:
+        # Apple-provided wallpapers can be readable while their protected
+        # metadata cannot be reproduced in a user folder. Preserve the image
+        # bytes instead; metadata is irrelevant when restoring a desktop.
+        tmp = saved + ".tmp"
+        try:
+            shutil.copyfile(full, tmp)
+            os.replace(tmp, saved)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return saved
+
+
+def _write_original_path(path):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(ORIGINAL_FILE, "w") as f:
+        f.write(path)
 
 
 def get_current_wallpaper():
@@ -62,17 +101,33 @@ def get_current_wallpaper():
 
 
 def capture_original_once():
-    """Save the user's real wallpaper the first time — before we overwrite it.
-    Skips our own generated images and never clobbers an already-saved value."""
+    """Archive the non-Flow wallpaper currently visible before overwriting it.
+
+    A user may change their desktop while Flow is off, so the current valid
+    wallpaper takes priority over an older marker. Generated Flow images are
+    skipped; in that case an existing original is retained and migrated into
+    the stable cache when necessary.
+    """
     try:
-        if os.path.exists(ORIGINAL_FILE):
-            return
         cur = get_current_wallpaper()
-        if cur and not _is_ours(cur) and os.path.exists(cur):
-            os.makedirs(CACHE_DIR, exist_ok=True)
-            with open(ORIGINAL_FILE, "w") as f:
-                f.write(cur)
-            print(f"[wallpaper] Saved your original desktop wallpaper: {cur}")
+        if cur and os.path.exists(cur) and not _is_ours(cur):
+            stable = _archive_original(cur)
+            _write_original_path(stable)
+            print(f"[wallpaper] Saved your original desktop wallpaper: {stable}")
+            return
+
+        if os.path.exists(ORIGINAL_FILE):
+            with open(ORIGINAL_FILE) as f:
+                existing = f.read().strip()
+            if existing and os.path.exists(existing) and not _is_ours(existing):
+                stable = _archive_original(existing)
+                if stable != existing:
+                    _write_original_path(stable)
+                return
+            try:
+                os.remove(ORIGINAL_FILE)
+            except OSError:
+                pass
     except Exception as e:
         print(f"[wallpaper] Could not save original wallpaper: {e}")
 

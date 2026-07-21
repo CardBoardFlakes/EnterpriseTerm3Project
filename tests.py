@@ -77,6 +77,7 @@ def test_config():
         check("retired location_precision dropped", "location_precision" not in cfg3)
         check("retired random sound mode dropped", "sound_mode" not in cfg3)
         check("legacy night weather becomes auto", cfg3["manual_weather"] == "auto")
+        check("night absent from weather choices", "night" not in config.WEATHER_CHOICES)
 
 
 # ---------------------------------------------------------
@@ -487,6 +488,70 @@ def test_wallpaper_patterns():
             wallpaper.CACHE_DIR = orig
 
 
+def test_wallpaper_original_archive():
+    section("wallpaper original snapshot")
+    saved = (wallpaper.CACHE_DIR, wallpaper.ORIGINAL_FILE,
+             wallpaper.get_current_wallpaper, wallpaper.set_wallpaper,
+             wallpaper.shutil.copy2)
+    with tempfile.TemporaryDirectory() as d:
+        cache = os.path.join(d, "cache")
+        original = os.path.join(d, "original.png")
+        with open(original, "wb") as f:
+            f.write(b"original wallpaper bytes")
+        restored = []
+        try:
+            wallpaper.CACHE_DIR = cache
+            wallpaper.ORIGINAL_FILE = os.path.join(cache, "original_wallpaper.txt")
+            wallpaper.get_current_wallpaper = lambda: original
+            wallpaper.set_wallpaper = lambda path, multi=True: restored.append(path) or True
+            wallpaper.capture_original_once()
+            with open(wallpaper.ORIGINAL_FILE) as f:
+                archived = f.read().strip()
+            check("original wallpaper copied into stable cache",
+                  os.path.isfile(archived) and archived != original)
+            check("archived original is not classified as generated",
+                  wallpaper._is_ours(archived) is False)
+            generated = os.path.join(cache, "wallpaper_clear_test.png")
+            check("generated wallpaper is classified as ours",
+                  wallpaper._is_ours(generated) is True)
+            os.remove(original)
+            check("restore survives source file removal", wallpaper.restore_original())
+            check("restore uses archived original", restored == [archived])
+
+            # If the user changes their desktop while Flow is off, the newly
+            # visible wallpaper must replace the stale saved marker.
+            newer = os.path.join(d, "newer.heic")
+            with open(newer, "wb") as f:
+                f.write(b"new manually selected wallpaper")
+            wallpaper.get_current_wallpaper = lambda: newer
+            wallpaper.capture_original_once()
+            with open(wallpaper.ORIGINAL_FILE) as f:
+                refreshed = f.read().strip()
+            with open(refreshed, "rb") as f:
+                refreshed_bytes = f.read()
+            check("current non-Flow wallpaper replaces stale marker",
+                  refreshed_bytes == b"new manually selected wallpaper")
+
+            protected = os.path.join(d, "protected.heic")
+            with open(protected, "wb") as f:
+                f.write(b"protected system wallpaper")
+            wallpaper.get_current_wallpaper = lambda: protected
+            def reject_metadata(*_args, **_kwargs):
+                raise PermissionError("metadata protected")
+            wallpaper.shutil.copy2 = reject_metadata
+            wallpaper.capture_original_once()
+            with open(wallpaper.ORIGINAL_FILE) as f:
+                protected_archive = f.read().strip()
+            with open(protected_archive, "rb") as f:
+                protected_bytes = f.read()
+            check("protected wallpaper falls back to content-only copy",
+                  protected_bytes == b"protected system wallpaper")
+        finally:
+            (wallpaper.CACHE_DIR, wallpaper.ORIGINAL_FILE,
+             wallpaper.get_current_wallpaper, wallpaper.set_wallpaper,
+             wallpaper.shutil.copy2) = saved
+
+
 # ---------------------------------------------------------
 # sound
 # ---------------------------------------------------------
@@ -567,6 +632,16 @@ def test_music():
     section("music player")
     import music
     check("music dir is absolute", os.path.isabs(music.MUSIC_DIR))
+    with tempfile.TemporaryDirectory() as d:
+        created = music.ensure_sample_tracks(d)
+        check("empty music folder gets two samples", len(created) == 2)
+        check("sample names are friendly",
+              [os.path.basename(p) for p in created] == list(music.SAMPLE_TRACKS))
+        with wave.open(created[0], "rb") as wf:
+            check("sample music is valid long WAV",
+                  wf.getnchannels() == 1
+                  and wf.getnframes() >= wf.getframerate() * 10)
+        check("sample seeding is idempotent", music.ensure_sample_tracks(d) == [])
     with tempfile.TemporaryDirectory() as d:
         for fn in ["b_song.mp3", "a_song.ogg", "tune.wav", "notes.txt", "cover.jpg"]:
             open(os.path.join(d, fn), "wb").close()
@@ -1420,15 +1495,40 @@ def test_gui_helper():
           gui._shift_iso_date("2026-07-28", 7) == "2026-08-04")
     check("invalid task date falls back to today",
           gui._shift_iso_date("bad", 7, datetime.date(2026, 7, 21)) == "2026-07-28")
-    check("dashboard names weather and time",
-          gui._weather_summary("rain", "afternoon") ==
-          "Weather: Rain  ·  Time: Afternoon")
+    check("dashboard uses compact weather-time format",
+          gui._weather_summary("rain", "afternoon") == "Rain  ·  afternoon")
+    check("dashboard compact format marks manual weather",
+          gui._weather_summary("rain", "afternoon", manual=True) ==
+          "Rain  ·  afternoon  ·  manual")
+    check("long timer labels select a smaller fitting font",
+          gui._largest_fitting_font(
+              "abcdefghij", 300,
+              lambda value, size: len(value) * size) == 30)
+
+    class FakeCheckbutton:
+        def __init__(self):
+            self.state = None
+
+        def configure(self, state):
+            self.state = state
+
+    controls = [FakeCheckbutton(), FakeCheckbutton()]
+    fake.feature_checks = controls
+    gui.App._set_feature_controls_state(fake, False)
+    check("master off disables child controls",
+          all(control.state == "disabled" for control in controls))
+    gui.App._set_feature_controls_state(fake, True)
+    check("master on enables child controls",
+          all(control.state == "normal" for control in controls))
 
     shell_source = inspect.getsource(gui.App._build_ui)
     settings_source = inspect.getsource(gui.App._tab_settings)
     check("main tab is named Settings", 'text="  Settings  "' in shell_source)
     check("city helper text removed", "Pick your city for live weather" not in settings_source)
     check("random playback controls removed", "Playback" not in settings_source)
+    dashboard_source = inspect.getsource(gui.App._tab_dashboard)
+    check("accent control explains its OS effect",
+          "nearest named macOS accent" in dashboard_source)
 
 
 def test_cities():
@@ -1854,6 +1954,7 @@ def main():
     test_high_contrast()
     test_wallpaper()
     test_wallpaper_patterns()
+    test_wallpaper_original_archive()
     test_sound()
     test_sound_variants_and_modes()
     test_music()

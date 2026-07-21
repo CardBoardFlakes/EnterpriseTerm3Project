@@ -10,7 +10,7 @@ of day. It's optional — if `pygame` isn't installed, sound is silently skipped
 - [Continuous playback](#continuous-playback)
 - [Pause when other audio plays](#pause-when-other-audio-plays)
 - [Placeholder sounds](#placeholder-sounds)
-- [Play your own music](#play-your-own-music)
+- [Play music](#play-music)
 
 ---
 
@@ -127,10 +127,11 @@ Sound not playing at all? See
 
 ---
 
-## Play your own music
+## Play music
 
-You can play your **own downloaded songs** in the background while you work.
-Open **⏱ Focus & Tasks → Music**:
+Open **⏱ Focus & Tasks → Music**. When the `music/` folder has no audio, Flow
+creates two short, original sample tracks so the player works immediately.
+Adding any of your own audio leaves that library untouched.
 
 - **Add songs…** — pick `.mp3` / `.ogg` / `.wav` files; they're copied into the
   `music/` folder (next to the app). Or drop files there yourself and hit

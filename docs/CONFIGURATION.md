@@ -27,6 +27,7 @@ error; the file is not overwritten until settings are next saved.
 | Settings | `config.json` (project folder) |
 | Tasks | `tasks.json` (project folder) — see [tasks guide](TASKS_AND_TIMER.md) |
 | Ambient sounds | `sounds/` (project folder) |
+| Music and generated starter samples | `music/` (project folder) |
 | Generated PNG wallpaper | `~/.environment_theme_controller/` |
 
 ---
@@ -43,8 +44,8 @@ Under `"features"`; each is ANDed with the master switch.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `dynamic_theme` | bool | `true` | OS accent colour follows the weather. |
-| `wallpaper` | bool | `true` | Desktop background follows the weather. Turning this feature off restores the saved original wallpaper when available. |
+| `dynamic_theme` | bool | `true` | OS accent colour follows the computed weather/time theme unless `manual_theme_color` is set. |
+| `wallpaper` | bool | `true` | Desktop background follows the weather. Turning this feature off restores Flow's archived copy of the original wallpaper when available. |
 | `ambient_sound` | bool | `true` | Weather/time soundscape. |
 | `tasks` | bool | `true` | Run scheduled tasks. |
 
