@@ -247,9 +247,16 @@ def _shift_iso_date(value, days, today=None):
 
 
 def _sync_feature_vars(enabled, variables):
-    """Set each per-feature BooleanVar to the master switch state."""
+    """Set every feature BooleanVar from the select-all control."""
     for variable in variables:
         variable.set(bool(enabled))
+
+
+def _select_all_state(cfg):
+    """Show select-all on only when saved on and every feature is selected."""
+    features = cfg.get("features", {})
+    return bool(cfg.get("enabled", True)) and all(
+        features.get(key, True) for key in config.FEATURE_KEYS)
 
 
 def _largest_fitting_font(text, available_width, measure, sizes=range(40, 19, -2)):
@@ -305,7 +312,6 @@ class App:
         self.music_list = None
         self.btn_music_play = None
         self.timer_label = None
-        self.feature_checks = []
 
         root.title("Flow")
         root.geometry("600x780")
@@ -320,7 +326,6 @@ class App:
         self._install_styles()
 
         self._build_vars()
-        self._persist_master_consistency()
         self._build_ui()
         self._bind_auto_apply()
         self._start_engine()
@@ -332,14 +337,11 @@ class App:
     def _build_vars(self):
         c = self.cfg
         f = c.get("features", {})
-        self.v_enabled = tk.BooleanVar(value=c.get("enabled", True))
+        self.v_enabled = tk.BooleanVar(value=_select_all_state(c))
         self.v_theme = tk.BooleanVar(value=f.get("dynamic_theme", True))
         self.v_wallpaper = tk.BooleanVar(value=f.get("wallpaper", True))
         self.v_sound = tk.BooleanVar(value=f.get("ambient_sound", True))
         self.v_tasks = tk.BooleanVar(value=f.get("tasks", True))
-        if not self.v_enabled.get():
-            _sync_feature_vars(
-                False, (self.v_theme, self.v_wallpaper, self.v_sound, self.v_tasks))
         self.v_tint = tk.DoubleVar(value=float(c.get("weather_tint_strength", 40)))
         self.v_volume = tk.DoubleVar(value=float(c.get("sound_volume", 25)))
         self._vol_save_job = None            # debounced save for the volume slider
@@ -396,14 +398,6 @@ class App:
         self.lap_box = None             # stopwatch laps list (when shown)
 
     # --- styling / time-of-day UI theme --------------------------------
-    def _persist_master_consistency(self):
-        """Repair legacy configs whose child features stayed on under master off."""
-        if self.v_enabled.get():
-            return
-        if any(self.cfg.get("features", {}).values()):
-            self._collect()
-            config.save_config(self.cfg)
-
     def _install_styles(self):
         self.style = ttk.Style()
         try:
@@ -679,7 +673,6 @@ class App:
         nb.add(self._tab_dashboard(nb), text="  Dashboard  ")
         nb.add(self._tab_settings(nb), text="  Settings  ")
         nb.bind("<<NotebookTabChanged>>", self._on_main_tab_changed)
-        self._set_feature_controls_state(self.v_enabled.get())
 
         bar = ttk.Frame(self.root, padding=(12, 4))
         bar.pack(fill="x", side="bottom")
@@ -733,18 +726,18 @@ class App:
 
         # Master + features ----------------------------------------------
         fc = _card(body, "Features")
-        ttk.Checkbutton(fc, text="Enable everything (master switch)",
+        ttk.Checkbutton(fc, text="Enable everything (select all)",
                         style="Card.TCheckbutton", command=self.on_master_toggle,
                         variable=self.v_enabled).pack(anchor="w", pady=(0, 6))
-        for text, var, cmd in [("🎨  System accent follows theme", self.v_theme,
-                                self._on_override_change),
-                               ("🖼  Weather wallpaper", self.v_wallpaper, self._on_override_change),
-                               ("🔊  Ambient sound", self.v_sound, self.on_sound_toggle)]:
-            kw = {"command": cmd} if cmd else {}
-            checkbutton = ttk.Checkbutton(
-                fc, text=text, style="Card.TCheckbutton", variable=var, **kw)
-            checkbutton.pack(anchor="w", pady=1)
-            self.feature_checks.append(checkbutton)
+        for feature, text, var in [
+                ("dynamic_theme", "🎨  System accent follows theme", self.v_theme),
+                ("wallpaper", "🖼  Weather wallpaper", self.v_wallpaper),
+                ("ambient_sound", "🔊  Ambient sound", self.v_sound),
+                ("tasks", "🔔  Task reminders", self.v_tasks)]:
+            ttk.Checkbutton(
+                fc, text=text, style="Card.TCheckbutton", variable=var,
+                command=lambda name=feature: self.on_feature_toggle(name)
+            ).pack(anchor="w", pady=1)
         _responsive_label(
             fc, style="Muted.TLabel",
             text="System accent changes the Windows taskbar/title colour or the "
@@ -786,7 +779,7 @@ class App:
         ttk.Checkbutton(wp, text="Dynamic (subtle colour shift)", style="Card.TCheckbutton",
                         variable=self.v_wpdynamic).pack(anchor="w", pady=(6, 0))
         self._slider(wp, "Colour shift strength", self.v_wpshift)
-        ttk.Checkbutton(wp, text="Weather patterns (rain, sun, clouds, stars)",
+        ttk.Checkbutton(wp, text="Sun, moon, stars & weather patterns",
                         style="Card.TCheckbutton",
                         variable=self.v_wppatterns).pack(anchor="w", pady=(6, 0))
         ttk.Checkbutton(wp, text="Warm palette when it's cold outside",
@@ -1603,55 +1596,27 @@ class App:
         })
 
     def on_master_toggle(self):
-        """
-        Persist the master switch and push it to the running engine immediately.
-        Turning it off silences ambience and stops further updates; it leaves
-        the current wallpaper/accent in place.
-        """
+        """Select or clear every independent feature, then apply immediately."""
         on = self.v_enabled.get()
         _sync_feature_vars(
             on, (self.v_theme, self.v_wallpaper, self.v_sound, self.v_tasks))
-        self._set_feature_controls_state(on)
-        if on:
-            # Enabling applies immediately (bypasses the redraw guard).
-            self._apply_live("Enabled")
-            return
-        # Disabling: persist, silence sound now, and stop further updates.
-        self._collect()
-        config.save_config(self.cfg)
-        try:
+        if not on:
             sound.stop_sound()
-        except Exception:
-            pass
-        if self.engine_thread and self.engine_thread.is_alive():
-            self.engine_thread.wake()
-            self.v_status.set("Disabled — engine idle (wallpaper/accent left as-is).")
-        else:
-            self.v_status.set("Disabled.")
+        self._apply_live("All features enabled" if on else "All features off")
 
-    def _set_feature_controls_state(self, enabled):
-        """Prevent child toggles from appearing active while master is off."""
-        state = "normal" if enabled else "disabled"
-        for checkbutton in self.feature_checks:
-            try:
-                checkbutton.configure(state=state)
-            except tk.TclError:
-                pass
+    def on_feature_toggle(self, feature):
+        """Apply one feature without requiring the select-all control."""
+        if self.v_enabled.get() and not all(
+                var.get() for var in
+                (self.v_theme, self.v_wallpaper, self.v_sound, self.v_tasks)):
+            self.v_enabled.set(False)
+        if feature == "ambient_sound" and not self.v_sound.get():
+            sound.stop_sound()
+        self._apply_live("Feature updated")
 
     def on_sound_toggle(self):
-        """Turn ambient sound on/off *now* — unticking stops it immediately."""
-        self._collect()
-        config.save_config(self.cfg)
-        if not self.v_sound.get():
-            try:
-                sound.stop_sound()          # kill the looping clip right away
-            except Exception:
-                pass
-            self.v_status.set("Ambient sound off.")
-        else:
-            self.v_status.set("Ambient sound on.")
-        if self.engine_thread and self.engine_thread.is_alive():
-            self.engine_thread.wake()
+        """Compatibility hook for callers toggling ambient sound directly."""
+        self.on_feature_toggle("ambient_sound")
 
     def on_manage_sounds(self):
         """Show the exact filenames each weather needs, and open the folder."""
@@ -1697,7 +1662,7 @@ class App:
         if "error" in st:
             return f"Error: {st['error']}"
         if not st.get("enabled", True):
-            return "Disabled (master switch off)."
+            return "All features off."
         parts = [f"{st.get('condition', '?')}",
                  st.get("phase") or ("night" if st.get("is_night") else "day"),
                  _fmt_temp(st.get("temperature")),

@@ -36,11 +36,11 @@ error; the file is not overwritten until settings are next saved.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `enabled` | bool | `true` | Master switch. When `false`, new engine actions and reminders stop and ambient sound is silenced; the current accent and wallpaper remain in place. |
+| `enabled` | bool | `true` | Saved state of the GUI's **Enable everything** select-all control. It does not gate individually selected features. Turning it off in the GUI clears every feature switch. |
 
 ## Features
 
-Under `"features"`; each is ANDed with the master switch.
+Under `"features"`; each switch operates independently of `enabled`.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -56,7 +56,7 @@ Under `"features"`; each is ANDed with the master switch.
 | `weather_tint_strength` | int 0–100 | `72` | How strongly the weather colour shows vs. neutral. |
 | `wallpaper_dynamic` | bool | `true` | Slow, subtle colour drift. |
 | `wallpaper_shift_strength` | int 0–100 | `35` | Amplitude of that drift. |
-| `wallpaper_patterns` | bool | `true` | Weather patterns (rain/sun/clouds/stars). |
+| `wallpaper_patterns` | bool | `true` | Sun, moon, stars, clouds, rain, and storm overlays. A clear afternoon has no visible sun when this is `false`. |
 | `wallpaper_warmth` | bool | `true` | Warm the palette when it's cold outside. |
 | `wallpaper_min_interval_seconds` | int ≥5 | `45` | Minimum gap between generated wallpaper redraws. |
 | `wallpaper_refresh_seconds` | int ≥0 | `90` | Periodically reapply an unchanged wallpaper so macOS Spaces catch up; `0` disables this. |

@@ -81,17 +81,14 @@ def tick(cfg: dict, store: "tasks_mod.TaskStore" = None,
          now: datetime.datetime = None) -> dict:
     """Run one full evaluation cycle. Returns a status dict for display."""
     now = now or datetime.datetime.now()
+    any_enabled = any(config.feature_enabled(cfg, key)
+                      for key in config.FEATURE_KEYS)
     status = {
         "time": now.isoformat(timespec="seconds"),
-        "enabled": bool(cfg.get("enabled", True)),
+        "enabled": any_enabled,
         "applied": [],
         "fired_tasks": [],
     }
-
-    if not cfg.get("enabled", True):
-        sound.stop_sound()
-        status["note"] = "master switch off"
-        return status
 
     cfg = profiles.overlay_config(cfg, cfg.get("active_profile"))
     status["profile"] = (cfg.get("active_profile") or "none")
@@ -314,19 +311,14 @@ class Engine:
     # --- one cheap step -----------------------------------------------
     def step(self, cfg, store=None, now=None):
         now = now or datetime.datetime.now()
+        any_enabled = any(config.feature_enabled(cfg, key)
+                          for key in config.FEATURE_KEYS)
         status = {
             "time": now.isoformat(timespec="seconds"),
-            "enabled": bool(cfg.get("enabled", True)),
+            "enabled": any_enabled,
             "applied": [],
             "fired_tasks": [],
         }
-
-        if not cfg.get("enabled", True):
-            if self._sound_on:
-                sound.stop_sound()
-                self._sound_on = False
-            status["note"] = "master switch off"
-            return status
 
         # Active mood profile overlays sound volume + motion.
         cfg = profiles.overlay_config(cfg, cfg.get("active_profile"))

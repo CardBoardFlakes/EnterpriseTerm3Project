@@ -16,9 +16,9 @@ import tempfile
 # started from the parent folder — the desktop then never seemed to change.)
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
-# Master defaults. Every setting the app understands lives here.
+# Application defaults. Every setting the app understands lives here.
 DEFAULTS = {
-    # Master switch — when False the engine does nothing at all.
+    # Select-all UI state. Features remain independently selectable when false.
     "enabled": True,
 
     # Per-feature switches.
@@ -268,7 +268,5 @@ def save_config(cfg: dict, path: str = CONFIG_FILE) -> bool:
 
 
 def feature_enabled(cfg: dict, feature: str) -> bool:
-    """True only if the master switch AND the named feature are both on."""
-    if not cfg.get("enabled", True):
-        return False
+    """Return the named feature's independent on/off state."""
     return bool(cfg.get("features", {}).get(feature, True))

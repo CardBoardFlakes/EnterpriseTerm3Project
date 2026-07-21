@@ -56,7 +56,8 @@ work-session count is shown under the timer.
 ## Tasks & schedules
 
 The **To-Do & Schedules** tab shows your tasks and a form to add new ones. Tasks
-are stored in `tasks.json` and run automatically while the master switch is on.
+are stored in `tasks.json` and run while **Task reminders** is selected on the
+Dashboard. It works independently of **Enable everything**.
 
 The form uses plain language — no need to know the internal fields.
 
@@ -92,9 +93,9 @@ with a clear hint.
 ### When tasks fire
 
 Tasks are evaluated on each engine step while the app or `--background` mode is
-running and the master switch is on. A daily task fires the first engine step at
-or after its time, once per day. A one-off fires the first step at or after its
-datetime, then is marked done. If the app isn't running at the exact minute,
+running and **Task reminders** is on. A daily task fires the first engine step
+at or after its time, once per day. A one-off fires the first step at or after
+its datetime, then is marked done. If the app isn't running at the exact minute,
 the daily task still fires the next time it runs that day; an overdue one-off
 fires the next time the engine runs.
 

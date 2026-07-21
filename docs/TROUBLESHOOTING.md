@@ -58,8 +58,8 @@ after temporary device errors and restarts a dropped loop within a few seconds.
 
 Unticking **Weather wallpaper** restores the non-Flow wallpaper that was visible
 before Flow most recently took over. Flow archives a stable copy rather than
-relying on a temporary OS path. Turning off the master switch instead leaves
-the current wallpaper and accent in place.
+relying on a temporary OS path. Turning off **Enable everything** also restores
+it because that select-all action clears **Weather wallpaper**.
 
 ### It only changes when I'm *not* in a fullscreen app (macOS)
 

@@ -68,6 +68,9 @@ live-apply). Both must be kept consistent when you change behaviour.
 - **Work only on change**: the engine re-applies theme/wallpaper/sound only
   when the visible result changes (signatures/guards). Don't add unconditional
   per-tick OS writes.
+- **`enabled` is select-all UI state, not an engine gate.** Every entry under
+  `features` works independently while `enabled` is false. Clearing select-all
+  clears those entries and must still run wallpaper/sound cleanup.
 - **Degrade gracefully**: no network → fallback weather; no pygame → silent; an
   unsupported OS → skip that write and log `[subsystem] …`. Never crash a tick.
 - **Adding a setting** usually means: add to `config.py:DEFAULTS` (+ a

@@ -62,11 +62,11 @@ def test_config():
               cfg2["pomodoro"]["work_min"] == 25)
         check("config save leaves no partial temp file",
               not any(name.startswith(".flow-config-") for name in os.listdir(d)))
-        check("feature gated by master switch",
-              config.feature_enabled(cfg2, "dynamic_theme") is False)
-        cfg2["enabled"] = True
-        check("feature on when master on",
+        check("feature remains on when select-all is off",
               config.feature_enabled(cfg2, "dynamic_theme") is True)
+        cfg2["features"]["dynamic_theme"] = False
+        check("feature follows its own switch",
+              config.feature_enabled(cfg2, "dynamic_theme") is False)
         # Retired keys are stripped from old config files on load.
         import json as _json
         with open(p, "w") as f:
@@ -442,6 +442,17 @@ def test_wallpaper_patterns():
         return raw != before
     for cond in ("clear", "cloud", "rain", "storm", "night", "cloudnight"):
         check(f"{cond} pattern paints pixels", paints(cond))
+
+    # Clear afternoon must contain a visible bright sun at the expected arc
+    # position when celestial/weather patterns are enabled.
+    w, h, afternoon = 160, 100, 0.72
+    raw, stride = wallpaper._build_raw_gradient(w, h, (70, 100, 170), (20, 35, 80))
+    cx, cy, _ = wallpaper._sun_xy(w, h, afternoon)
+    offset = cy * stride + 1 + cx * 3
+    before_sun = sum(raw[offset:offset + 3])
+    wallpaper._render_clear(raw, stride, w, h, 0.3, 0.8, afternoon)
+    check("clear afternoon draws a bright sun",
+          sum(raw[offset:offset + 3]) > before_sun + 100)
 
     # Cloudy night differs from a clear night (clouds added), and the moon
     # position tracks the `sun` fraction (east vs west).
@@ -991,17 +1002,19 @@ def test_bugfixes():
         check("unpinned accent follows the weather",
               st2["color"] != [10, 20, 30] and st2["color_source"] == "computed")
 
-        # BUG: the master switch "did nothing". Off => engine applies nothing
-        # and silences sound.
+        # Select-all state must not gate independently selected features.
         counts.update(theme=0, wall=0, stop=0)
         cfg3 = config.default_config()
         cfg3["enabled"] = False
+        cfg3["features"].update({"dynamic_theme": False, "wallpaper": True,
+                                 "ambient_sound": False, "tasks": False})
         eng3 = engine.Engine()
         eng3._sound_on = True
         st3 = eng3.step(cfg3, None, now=at(12))
-        check("master off => not enabled", st3["enabled"] is False and "note" in st3)
-        check("master off applies no theme/wallpaper", counts["theme"] == 0 and counts["wall"] == 0)
-        check("master off stops sound", counts["stop"] >= 1)
+        check("individual wallpaper works with select-all off",
+              st3["enabled"] is True and counts["theme"] == 0
+              and counts["wall"] == 1)
+        check("individually disabled sound stops", counts["stop"] >= 1)
 
         # BUG: ambient wouldn't stop when the feature was turned off.
         counts.update(theme=0, wall=0, stop=0)
@@ -1339,9 +1352,24 @@ def test_wallpaper_restore_on_disable():
         eng.step(cfg, None, now=now)
         check("restores again after re-enable then disable", counts["restore"] == 2)
 
+        # Clicking "Enable everything" off clears all child features. Its
+        # saved select-all state must not bypass wallpaper restoration.
+        counts["restore"] = 0
+        cfg_all = config.default_config()
+        cfg_all["features"]["ambient_sound"] = False
+        eng_all = engine.Engine()
+        eng_all.step(cfg_all, None, now=now)
+        cfg_all["enabled"] = False
+        for feature in cfg_all["features"]:
+            cfg_all["features"][feature] = False
+        eng_all.step(cfg_all, None, now=now)
+        check("select-all off restores original wallpaper",
+              counts["restore"] == 1)
+
         # One-shot tick(): feature off + a weather wallpaper still showing.
         counts["restore"] = 0
         cfg2 = config.default_config()
+        cfg2["enabled"] = False
         cfg2["features"]["wallpaper"] = False
         cfg2["features"]["ambient_sound"] = False
         engine.tick(cfg2, None, now=now)
@@ -1390,15 +1418,22 @@ def test_engine():
             check("wallpaper skipped when off", applied["wallpaper"] == 0)
             check("sound stopped when off", applied["stop"] >= 1)
 
-            # master off
+            # Select-all state does not gate remaining individual features.
             cfg["enabled"] = False
             st = engine.tick(cfg, store)
-            check("master off => not enabled", st["enabled"] is False)
+            check("select-all off keeps selected features running",
+                  st["enabled"] is True)
+            for feature in cfg["features"]:
+                cfg["features"][feature] = False
+            st = engine.tick(cfg, store)
+            check("all individual features off => not enabled",
+                  st["enabled"] is False)
 
             # task firing
             cfg["enabled"] = True
             cfg["features"]["wallpaper"] = True
             cfg["features"]["ambient_sound"] = True
+            cfg["features"]["tasks"] = True
             past_min = (datetime.datetime.now() - datetime.timedelta(minutes=1)).strftime("%H:%M")
             store.add_task("Chime me", type="daily", time=past_min, action="chime")
             st = engine.tick(cfg, store)
@@ -1487,9 +1522,19 @@ def test_gui_helper():
         var.value = False
         var.set = lambda value, target=var: setattr(target, "value", value)
     gui._sync_feature_vars(True, feature_vars)
-    check("master on checks every feature", all(v.value is True for v in feature_vars))
+    check("select-all on checks every feature", all(v.value is True for v in feature_vars))
     gui._sync_feature_vars(False, feature_vars)
-    check("master off unchecks every feature", all(v.value is False for v in feature_vars))
+    check("select-all off unchecks every feature", all(v.value is False for v in feature_vars))
+    select_cfg = config.default_config()
+    check("select-all startup state on when all features selected",
+          gui._select_all_state(select_cfg) is True)
+    select_cfg["features"]["ambient_sound"] = False
+    check("select-all startup state off when one feature is off",
+          gui._select_all_state(select_cfg) is False)
+    select_cfg["features"]["ambient_sound"] = True
+    select_cfg["enabled"] = False
+    check("saved select-all off stays off when children are on",
+          gui._select_all_state(select_cfg) is False)
 
     check("week button accumulates from field date",
           gui._shift_iso_date("2026-07-28", 7) == "2026-08-04")
@@ -1505,21 +1550,41 @@ def test_gui_helper():
               "abcdefghij", 300,
               lambda value, size: len(value) * size) == 30)
 
-    class FakeCheckbutton:
-        def __init__(self):
-            self.state = None
+    class ToggleVar:
+        def __init__(self, value):
+            self.value = value
 
-        def configure(self, state):
-            self.state = state
+        def get(self):
+            return self.value
 
-    controls = [FakeCheckbutton(), FakeCheckbutton()]
-    fake.feature_checks = controls
-    gui.App._set_feature_controls_state(fake, False)
-    check("master off disables child controls",
-          all(control.state == "disabled" for control in controls))
-    gui.App._set_feature_controls_state(fake, True)
-    check("master on enables child controls",
-          all(control.state == "normal" for control in controls))
+        def set(self, value):
+            self.value = value
+
+    toggle_app = object.__new__(gui.App)
+    toggle_app.v_enabled = ToggleVar(False)
+    toggle_app.v_theme = ToggleVar(True)
+    toggle_app.v_wallpaper = ToggleVar(True)
+    toggle_app.v_sound = ToggleVar(True)
+    toggle_app.v_tasks = ToggleVar(True)
+    applied = []
+    toggle_app._apply_live = applied.append
+    old_stop = sound.stop_sound
+    sound.stop_sound = lambda: None
+    try:
+        gui.App.on_master_toggle(toggle_app)
+        check("select-all off clears every feature and applies",
+              all(not var.get() for var in
+                  (toggle_app.v_theme, toggle_app.v_wallpaper,
+                   toggle_app.v_sound, toggle_app.v_tasks))
+              and applied == ["All features off"])
+        toggle_app.v_wallpaper.set(True)
+        gui.App.on_feature_toggle(toggle_app, "wallpaper")
+        check("child feature remains usable with select-all off",
+              toggle_app.v_enabled.get() is False
+              and toggle_app.v_wallpaper.get() is True
+              and applied[-1] == "Feature updated")
+    finally:
+        sound.stop_sound = old_stop
 
     shell_source = inspect.getsource(gui.App._build_ui)
     settings_source = inspect.getsource(gui.App._tab_settings)
@@ -1529,6 +1594,10 @@ def test_gui_helper():
     dashboard_source = inspect.getsource(gui.App._tab_dashboard)
     check("accent control explains its OS effect",
           "nearest named macOS accent" in dashboard_source)
+    check("task reminders have an independent switch",
+          "Task reminders" in dashboard_source)
+    check("celestial wallpaper setting is explicit",
+          "Sun, moon, stars & weather patterns" in settings_source)
 
 
 def test_cities():

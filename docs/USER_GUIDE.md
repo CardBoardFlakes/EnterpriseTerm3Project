@@ -71,21 +71,21 @@ computed colour and ambient level without overwriting your volume setting:
 Focus is cooler and quieter, Creativity more vivid, and Relax warmer and
 gentler.
 
-**Features** — the master switch plus per-feature toggles:
+**Features** — a select-all control plus independent feature toggles:
 
-- *Enable everything* — the master switch. Toggling it takes effect
-  **immediately** and checks or unchecks every feature below it. Turning it off
-  silences ambient sound and stops all further theme/wallpaper updates (it
-  leaves the current wallpaper and accent as they are). Turning it back on
-  enables and resumes every feature.
+- *Enable everything* — checks or unchecks every feature below it immediately.
+  Turning it off also restores the original wallpaper because it clears
+  **Weather wallpaper**. Child controls remain available: leave select-all off
+  and enable only the features you want.
 - *System accent follows theme* — OS accent follows weather and time unless an
   exact colour is picked below. It changes the Windows taskbar/title colour or
   the nearest named macOS accent; existing macOS apps may need relaunching.
 - *Weather wallpaper* — desktop background follows the weather.
 - *Ambient sound* — weather/time soundscape.
+- *Task reminders* — runs scheduled notification/chime tasks.
 
-Scheduled reminders have no separate main-window toggle. They run automatically
-while the master switch is on and are managed in **Focus & Tasks**.
+Reminder contents are managed in **Focus & Tasks**; their independent feature
+switch is on the Dashboard.
 
 **Manual theme changer** — override what the app shows:
 
@@ -108,8 +108,9 @@ while the master switch is on and are managed in **Focus & Tasks**.
 Longer-lived appearance and engine controls. The tab scrolls only when its
 cards do not fit; the scrollbar hides when everything is visible.
 
-- **Wallpaper look** — tint strength, subtle colour drift, weather patterns
-  (rain/sun/clouds/stars), and the cold-weather warm tint. See the
+- **Wallpaper look** — tint strength, subtle colour drift, celestial/weather
+  patterns (sun/moon/stars/rain/clouds), and the cold-weather warm tint. A clear
+  daytime wallpaper only shows its sun while this pattern switch is on. See the
   [Wallpaper guide](WALLPAPER.md).
 - **Sound** — ambient volume, optional pause for detectable external audio, and
   a **Sound files…** button that lists required filenames and opens the folder.

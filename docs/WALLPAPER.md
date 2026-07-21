@@ -20,8 +20,9 @@ On the **Settings** tab, the **Wallpaper look** card controls generated images:
 - **Dynamic (subtle colour shift)** — a slow, barely-perceptible hue/brightness
   drift so the desktop feels alive without being distracting.
 - **Colour shift strength** — how far that drift travels.
-- **Weather patterns** — the condition-specific overlay (see below); positions
-  shift between redraws. Turn it off for a plain gradient.
+- **Sun, moon, stars & weather patterns** — the condition-specific overlay (see
+  below); positions shift between redraws. Turn it off for a plain gradient,
+  including no sun on a clear afternoon.
 - **Warm palette when it's cold outside** — see [warmth](#cold-weather-warmth).
 
 Each weather condition has its own base colour and gradient, so clear, cloudy,
@@ -36,7 +37,8 @@ originally reported a temporary source path.
 
 ## Weather patterns
 
-When **Weather patterns** is on, a light overlay is drawn per condition:
+When **Sun, moon, stars & weather patterns** is on, a light overlay is drawn per
+condition:
 
 | Condition | Pattern |
 |---|---|

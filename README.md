@@ -44,6 +44,7 @@ See the full walkthrough in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 | **Accessibility** | A **high-contrast** mode forces bold, maximum-contrast colours and a black/white/yellow window. |
 | **Dark/Light lock** | Force the device (and app) to Dark or Light, or let it follow the time of day. |
 | **Weather wallpaper** | A sky-gradient background per condition, with weather patterns (rain, sun, clouds, stars) and a cosy warm tint when it's cold. |
+| **Independent features** | **Enable everything** selects or clears all features at once. Leave it off and enable accent, wallpaper, ambience, or reminders individually. |
 | **Ambient sound** | Relaxing weather/time soundscapes that loop continuously. Add your own files or variants; windy skies use the cloudy ambience. |
 | **Music player** | Two original sample tracks appear automatically in an empty library. Add your own songs (mp3/ogg/wav/flac/m4a), with playlist controls and a separate volume. |
 | **Audio priority** | Flow music always pauses ambience. An optional setting also pauses ambience for detectable external audio (best-effort Spotify/Apple Music on macOS, or any app on Windows with `pycaw`). |
@@ -151,7 +152,7 @@ pip install ruff
 python3 -m ruff check .      # 0 issues
 ```
 
-A 405-check headless test suite covering config,
+A 412-check headless test suite covering config,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
 / warmth / reliable original restoration, sound selection / variants /
