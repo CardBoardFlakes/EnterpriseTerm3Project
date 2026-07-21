@@ -160,7 +160,7 @@ pip install ruff
 python3 -m ruff check .      # 0 issues
 ```
 
-A 450-check headless test suite covering config,
+A 453-check headless test suite covering config,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
 / warmth / reliable original restoration, sound selection / variants /

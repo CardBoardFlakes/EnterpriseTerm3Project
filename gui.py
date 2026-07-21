@@ -410,6 +410,7 @@ class App:
         self.timer = clocks.CountdownTimer(self.v_timermin.get())
         self.clock_settings = None      # per-mode settings frame (rebuilt on switch)
         self.btn_clock_extra = None     # Skip / Lap context button
+        self.btn_clock_reset = None
         self.lap_box = None             # stopwatch laps list (when shown)
 
     # --- styling / time-of-day UI theme --------------------------------
@@ -1151,6 +1152,7 @@ class App:
         self.timer_label = None
         self.clock_settings = None
         self.btn_clock_extra = None
+        self.btn_clock_reset = None
 
     def _build_music_frame(self, parent):
         page = ttk.Frame(parent, padding=12)
@@ -1304,8 +1306,10 @@ class App:
         self.btn_clock_extra = ttk.Button(ctl, text="Skip", style="Ghost.TButton",
                                           command=self.on_clock_extra)
         self.btn_clock_extra.pack(side="left", padx=4)
-        ttk.Button(ctl, text="Reset", style="Ghost.TButton",
-                   command=self.on_clock_reset).pack(side="left", padx=4)
+        self.btn_clock_reset = ttk.Button(
+            ctl, text="Reset", style="Ghost.TButton",
+            command=self.on_clock_reset)
+        self.btn_clock_reset.pack(side="left", padx=4)
 
         # Per-mode settings, rebuilt when the mode changes.
         wrap = _card(page)
@@ -1344,12 +1348,14 @@ class App:
         if not self._alive(self.btn_clock_extra):
             return
         m = self.v_clockmode.get()
-        if m == "pomodoro":
-            self.btn_clock_extra.config(text="Skip", state="normal")
-        elif m == "stopwatch":
-            self.btn_clock_extra.config(text="Lap", state="normal")
-        else:
-            self.btn_clock_extra.config(text="Skip", state="disabled")
+        if m == "timer":
+            self.btn_clock_extra.pack_forget()
+            return
+        text = "Skip" if m == "pomodoro" else "Lap"
+        self.btn_clock_extra.config(text=text, state="normal")
+        if not self.btn_clock_extra.winfo_manager():
+            self.btn_clock_extra.pack(
+                side="left", padx=4, before=self.btn_clock_reset)
 
     def _rebuild_clock_settings(self):
         if not self._alive(self.clock_settings):

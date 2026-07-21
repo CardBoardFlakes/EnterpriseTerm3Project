@@ -1628,6 +1628,51 @@ def test_gui_helper():
     check("all formerly manual settings auto-apply",
           all(getattr(fake, name).traces for name in names))
 
+    class FakeButton:
+        def __init__(self):
+            self.manager = "pack"
+            self.options = {}
+
+        def winfo_exists(self):
+            return True
+
+        def winfo_manager(self):
+            return self.manager
+
+        def config(self, **kwargs):
+            self.options.update(kwargs)
+
+        def pack_forget(self):
+            self.manager = ""
+
+        def pack(self, **kwargs):
+            self.manager = "pack"
+            self.options.update(kwargs)
+
+    class ModeVar:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    clock_app = object.__new__(gui.App)
+    clock_app.btn_clock_extra = FakeButton()
+    clock_app.btn_clock_reset = FakeButton()
+    clock_app.v_clockmode = ModeVar("timer")
+    gui.App._sync_extra_button(clock_app)
+    check("plain timer hides Skip", clock_app.btn_clock_extra.manager == "")
+    clock_app.v_clockmode.value = "pomodoro"
+    gui.App._sync_extra_button(clock_app)
+    check("Pomodoro restores Skip",
+          clock_app.btn_clock_extra.manager == "pack"
+          and clock_app.btn_clock_extra.options["text"] == "Skip")
+    clock_app.v_clockmode.value = "stopwatch"
+    gui.App._sync_extra_button(clock_app)
+    check("stopwatch keeps Lap",
+          clock_app.btn_clock_extra.manager == "pack"
+          and clock_app.btn_clock_extra.options["text"] == "Lap")
+
     feature_vars = [FakeVar() for _ in range(4)]
     for var in feature_vars:
         var.value = False
