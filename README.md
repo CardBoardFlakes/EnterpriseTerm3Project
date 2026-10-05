@@ -136,6 +136,28 @@ publishing a release.
 
 ---
 
+## The research behind Flow
+
+Flow's features build on published research about breaks, sound, colour,
+light, music and planning, and how each affects focus, productivity and
+wellbeing. The studies below test the general techniques, not Flow itself,
+and results vary from person to person. They explain why each feature works
+the way it does.
+
+| Feature | What the research found | Study |
+|---|---|---|
+| **Pomodoro timer** | Students who took planned breaks (a 6-minute break after every 24 minutes, Pomodoro-style) said they felt more focused and motivated, and found tasks less hard, than students who chose their own breaks. These were self-reports, not test scores. | Biwer et al. (2023), *British Journal of Educational Psychology* — [doi:10.1111/bjep.12593](https://doi.org/10.1111/bjep.12593) |
+| **Pomodoro timer / reminders** | Attention on a long task fades over time. Short, occasional switches away from the task stopped that decline. | Ariga & Lleras (2011), *Cognition* — [doi:10.1016/j.cognition.2010.12.007](https://doi.org/10.1016/j.cognition.2010.12.007) |
+| **Ambient sound** | A moderate level of background noise (about 70 dB, roughly a busy café) boosted creative thinking compared with quiet. Loud noise (85 dB) hurt it, which is why Flow's ambience is quiet by default (25% volume). | Mehta, Zhu & Cheema (2012), *Journal of Consumer Research* — [doi:10.1086/665048](https://doi.org/10.1086/665048) |
+| **Weather / nature soundscapes** | A review of the research found that natural sounds such as water, wind and birdsong lowered stress and annoyance and improved mood and health. | Buxton et al. (2021), *PNAS* — [doi:10.1073/pnas.2013097118](https://doi.org/10.1073/pnas.2013097118) |
+| **Music player** | Software developers who listened to music they liked at work had better mood and higher quality of work. Time-on-task was longest with no music. | Lesiuk (2005), *Psychology of Music* — [doi:10.1177/0305735605050650](https://doi.org/10.1177/0305735605050650) |
+| **Colour themes** | The colour around you can change how you approach a task. In this study, red helped with detail-oriented tasks and blue helped with creative ones. Colour research is mixed, and part of this effect [failed to replicate](https://pubmed.ncbi.nlm.nih.gov/24222366/). Flow uses colour to set a mood, not as a proven performance boost. | Mehta & Zhu (2009), *Science* — [doi:10.1126/science.1169144](https://doi.org/10.1126/science.1169144) |
+| **Bright, cool daytime theme** | Office workers under blue-enriched white light during the day reported better alertness, performance and concentration, and less evening fatigue. | Viola et al. (2008), *Scand. J. Work, Environment & Health* — [doi:10.5271/sjweh.1268](https://doi.org/10.5271/sjweh.1268) |
+| **Warm, dark evening theme** | Bright light from screens before bed made it harder to fall asleep, delayed the body clock and lowered next-morning alertness. That's why Flow goes warm and dark at dusk and night. | Chang et al. (2015), *PNAS* — [doi:10.1073/pnas.1418490112](https://doi.org/10.1073/pnas.1418490112) |
+| **Tasks & schedules** | A review of 94 tests found that concrete "when X happens, I'll do Y" plans help people reach their goals much more than good intentions alone. Timed reminders put this into practice. | Gollwitzer & Sheeran (2006), *Advances in Experimental Social Psychology* — [doi:10.1016/S0065-2601(06)38002-1](https://doi.org/10.1016/S0065-2601(06)38002-1) |
+
+---
+
 ## Documentation
 
 Detailed, task-focused guides live in **[`docs/`](docs/)**:
