@@ -64,6 +64,7 @@ shared wake marker, so auto-apply remains immediate.
 | `pomodoro.py`, `clocks.py` | Timers |
 | `tasks.py` | Task/schedule store (`tasks.json`) |
 | `activity.py`, `autostart.py` | Idle detection; run-at-login |
+| `paths.py` | Data folder (source dir, or per-user dir when packaged) |
 | `gui.py` | Tk UI (Dashboard + Settings tabs; separate Focus & Tasks window) |
 
 ## Conventions
@@ -101,8 +102,15 @@ shared wake marker, so auto-apply remains immediate.
   add a test. `apply_values_to_config` reads new keys via `values.get(..., default)`
   so the existing GUI-mapping test keeps passing.
 - **Files/paths**: `config.json`, `tasks.json`, `sounds/`, and `music/` resolve
-  **absolute** next to the modules, independent of the launch directory;
-  generated wallpaper assets live in `~/.environment_theme_controller/`.
+  **absolute** under `paths.DATA_DIR` — next to the modules from source, or a
+  per-user folder (`~/Library/Application Support/Flow`, `%APPDATA%\Flow`) in a
+  packaged build. Never derive data paths from `__file__` (it points inside the
+  read-only bundle when frozen). Generated wallpaper assets live in
+  `~/.environment_theme_controller/`.
+- **Packaging**: `python packaging/build.py` (PyInstaller, `packaging/flow.spec`)
+  builds `Flow.app` + DMG / `Flow.exe`; `.github/workflows/release.yml` runs it on
+  macOS + Windows for `v*` tags. Run-at-login launches `sys.executable
+  --background` when frozen (`autostart._launch_args`).
 - **Cross-platform** branches live in `theme.py`, `wallpaper.py`, `autostart.py`,
   `audiocheck.py` (guard on `sys.platform`).
 

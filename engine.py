@@ -51,8 +51,10 @@ def notify(title: str, message: str):
             ps = (f'[void][System.Reflection.Assembly]::LoadWithPartialName('
                   f'"System.Windows.Forms");'
                   f'[System.Windows.Forms.MessageBox]::Show("{message}","{title}")')
+            # No console flash when running as the windowed Flow.exe.
             subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         else:
             print(f"[notify] {title}: {message}")
     except Exception as e:

@@ -1,0 +1,4 @@
+# Build-only tools for packaging Flow as a desktop app (packaging/build.py).
+# Not needed to run Flow from source, and never imported by the app itself.
+pyinstaller>=6.10
+pillow>=10        # lets PyInstaller convert the generated PNG icon to .icns/.ico

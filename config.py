@@ -10,11 +10,14 @@ import json
 import os
 import tempfile
 
-# Absolute path next to this module, so the app reads/writes the SAME config
+import paths
+
+# Absolute path in the data folder (next to this module from source; a per-user
+# folder in the packaged app — see paths.py), so the app reads/writes the SAME config
 # no matter which directory it's launched from. (A relative "config.json" would
 # resolve against the launch directory, silently creating a second config when
 # started from the parent folder — the desktop then never seemed to change.)
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+CONFIG_FILE = os.path.join(paths.DATA_DIR, "config.json")
 
 # Application defaults. Every setting the app understands lives here.
 DEFAULTS = {

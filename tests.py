@@ -9,6 +9,7 @@ tests never changes your machine.
 """
 
 import os
+import sys
 import struct
 import tempfile
 import datetime
@@ -23,6 +24,7 @@ import tasks as tasks_mod
 import autostart
 import engine
 import processlock
+import paths
 
 _passed = 0
 _failed = 0
@@ -1061,6 +1063,44 @@ def test_autostart():
         plist = autostart._macos_plist_contents()
         check("plist mentions --background", "--background" in plist)
         check("plist has RunAtLoad", "RunAtLoad" in plist)
+
+
+def test_packaged_paths():
+    section("packaged app paths + launch command")
+    here = os.path.dirname(os.path.abspath(__file__))
+    check("source run keeps data next to modules", paths.DATA_DIR == here)
+    check("config.json lives in DATA_DIR",
+          os.path.dirname(config.CONFIG_FILE) == paths.DATA_DIR)
+    check("tasks.json lives in DATA_DIR",
+          os.path.dirname(tasks_mod.TASKS_FILE) == paths.DATA_DIR)
+    check("sounds/ lives in DATA_DIR",
+          os.path.dirname(sound.SOUNDS_DIR) == paths.DATA_DIR)
+    mac = paths.user_data_dir("darwin")
+    check("macOS data dir is Application Support/Flow",
+          mac.endswith(os.path.join("Library", "Application Support", "Flow")))
+    old_appdata = os.environ.get("APPDATA")
+    os.environ["APPDATA"] = os.path.join("C:", "Users", "u", "AppData", "Roaming")
+    try:
+        check("Windows data dir is %APPDATA%\\Flow",
+              paths.user_data_dir("win32") == os.path.join(os.environ["APPDATA"], "Flow"))
+    finally:
+        if old_appdata is None:
+            os.environ.pop("APPDATA", None)
+        else:
+            os.environ["APPDATA"] = old_appdata
+    check("not frozen from source", paths.is_frozen() is False)
+    src_args = autostart._launch_args()
+    check("source login runs main.py --background",
+          src_args[1:] == [autostart.APP_MAIN, "--background"])
+    sys.frozen = True
+    try:
+        frozen_args = autostart._launch_args()
+        check("packaged login runs the app executable directly",
+              frozen_args == [sys.executable, "--background"])
+        check("packaged plist has no main.py",
+              "main.py" not in autostart._macos_plist_contents())
+    finally:
+        del sys.frozen
 
 
 # ---------------------------------------------------------
@@ -2296,6 +2336,7 @@ def main():
     test_audio_priority()
     test_tasks()
     test_autostart()
+    test_packaged_paths()
     test_bugfixes()
     test_city_change_refetch()
     test_task_claims_once()

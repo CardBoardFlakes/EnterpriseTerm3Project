@@ -4,12 +4,16 @@ Run the application automatically at login.
   * macOS   -> a LaunchAgent plist in ~/Library/LaunchAgents
   * Windows -> a value under HKCU\\...\\CurrentVersion\\Run
 
-Both launch ``main.py --background`` (the headless engine loop).
+Both launch ``main.py --background`` (the headless engine loop), or the
+packaged ``Flow`` executable with ``--background`` when running a built app.
 """
 
 import os
 import sys
 import subprocess
+from xml.sax.saxutils import escape
+
+import paths
 
 LABEL = "com.environmenttheme.controller"
 RUN_VALUE_NAME = "EnvironmentThemeController"
@@ -27,6 +31,13 @@ def _python_exe() -> str:
         if os.path.isfile(cand):
             return cand
     return exe
+
+
+def _launch_args() -> list:
+    """Command (argv) that starts the headless engine loop at login."""
+    if paths.is_frozen():
+        return [sys.executable, "--background"]
+    return [_python_exe(), APP_MAIN, "--background"]
 
 
 # ---------------------------------------------------------
@@ -48,11 +59,9 @@ def _macos_plist_contents() -> str:
         f'    <key>Label</key>\n    <string>{LABEL}</string>\n'
         '    <key>ProgramArguments</key>\n'
         '    <array>\n'
-        f'        <string>{_python_exe()}</string>\n'
-        f'        <string>{APP_MAIN}</string>\n'
-        '        <string>--background</string>\n'
-        '    </array>\n'
-        f'    <key>WorkingDirectory</key>\n    <string>{APP_DIR}</string>\n'
+        + "".join(f'        <string>{escape(a)}</string>\n' for a in _launch_args())
+        + '    </array>\n'
+        f'    <key>WorkingDirectory</key>\n    <string>{escape(paths.DATA_DIR)}</string>\n'
         '    <key>RunAtLoad</key>\n    <true/>\n'
         '</dict>\n'
         '</plist>\n'
@@ -104,7 +113,7 @@ _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 def _windows_command() -> str:
-    return f'"{_python_exe()}" "{APP_MAIN}" --background'
+    return subprocess.list2cmdline(_launch_args())
 
 
 def _windows_enable() -> bool:
@@ -180,7 +189,7 @@ def is_autostart_enabled() -> bool:
 def preview_command() -> str:
     """Human-readable description of what will run at login (for tests/UI)."""
     if sys.platform == "darwin":
-        return f"{_python_exe()} {APP_MAIN} --background  (LaunchAgent {LABEL})"
+        return f"{' '.join(_launch_args())}  (LaunchAgent {LABEL})"
     elif sys.platform == "win32":
         return _windows_command()
     return "unsupported"

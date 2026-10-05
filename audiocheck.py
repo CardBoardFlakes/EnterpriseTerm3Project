@@ -19,9 +19,10 @@ import os
 import sys
 
 import processlock
+import paths
 
 _MACOS_MEDIA_APPS = ("Spotify", "Music")
-_FLOW_NAMESPACE = os.path.dirname(os.path.abspath(__file__))
+_FLOW_NAMESPACE = paths.DATA_DIR
 _flow_process_lock = None
 
 

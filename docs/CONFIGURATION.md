@@ -1,6 +1,6 @@
 # Configuration Reference
 
-All settings live in **`config.json`** in the project folder. The GUI writes it
+All settings live in **`config.json`** in the [data folder](#file-locations). The GUI writes it
 for you, but you can edit it by hand. Main-window controls save automatically;
 the background engine reloads the file each cycle. Missing keys fall back to
 the defaults below. An unreadable file uses defaults in memory and logs an
@@ -22,12 +22,20 @@ error; the file is not overwritten until settings are next saved.
 
 ## File locations
 
+The **data folder** depends on how you run Flow:
+
+| How you run Flow | Data folder |
+|---|---|
+| From source (`python main.py`) | the project folder, next to `main.py` |
+| Downloaded app on macOS (`Flow.app`) | `~/Library/Application Support/Flow/` |
+| Downloaded app on Windows (`Flow.exe`) | `%APPDATA%\Flow\` |
+
 | What | Path |
 |---|---|
-| Settings | `config.json` (project folder) |
-| Tasks | `tasks.json` (project folder) — see [tasks guide](TASKS_AND_TIMER.md) |
-| Ambient sounds | `sounds/` (project folder) |
-| Music and generated starter samples | `music/` (project folder) |
+| Settings | `config.json` (data folder) |
+| Tasks | `tasks.json` (data folder) — see [tasks guide](TASKS_AND_TIMER.md) |
+| Ambient sounds | `sounds/` (data folder) |
+| Music and generated starter samples | `music/` (data folder) |
 | Generated PNG wallpaper | `~/.environment_theme_controller/` |
 
 ---

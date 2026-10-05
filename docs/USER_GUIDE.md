@@ -17,6 +17,13 @@ to bottom once — it takes five minutes.
 
 ## Installing & first launch
 
+The easiest way is to download **Flow for macOS (`.dmg`) or Windows (`.exe`)**
+from the project's [Releases page](https://github.com/CardBoardFlakes/EnterpriseTerm3Project/releases/latest)
+and open it like any other app — no Python or command line needed. See the
+[main README](../README.md#getting-flow) for first-launch security prompts.
+
+To run from source instead:
+
 ```bash
 cd EnterpriseTerm3Project
 pip install -r requirements.txt
@@ -168,7 +175,8 @@ close it. Full details in the [Tasks & timer guide](TASKS_AND_TIMER.md).
 ## Running automatically at login
 
 Tick **Run automatically at login** (Settings → Engine). This installs a
-headless launcher that runs `main.py --background` when you log in:
+headless launcher that runs `main.py --background` (or the downloaded app with
+`--background`) when you log in:
 
 - **macOS** — a LaunchAgent at `~/Library/LaunchAgents/com.environmenttheme.controller.plist`.
 - **Windows** — a value under `HKCU\...\CurrentVersion\Run`.
@@ -198,13 +206,17 @@ processes share one engine owner, and GUI changes wake it immediately.
 
 ## Where your settings live
 
+Run from source, everything lives in the project folder. The downloaded app
+uses `~/Library/Application Support/Flow/` on macOS and `%APPDATA%\Flow\` on
+Windows instead (called the *data folder* below).
+
 | What | Location |
 |---|---|
-| Settings | `config.json` (in the project folder) |
-| Tasks | `tasks.json` (in the project folder) |
+| Settings | `config.json` (data folder) |
+| Tasks | `tasks.json` (data folder) |
 | Generated wallpaper | `~/.environment_theme_controller/` |
-| Ambient sound files | `sounds/` (in the project folder) |
-| Music and starter samples | `music/` (in the project folder) |
+| Ambient sound files | `sounds/` (data folder) |
+| Music and starter samples | `music/` (data folder) |
 
 To change your **location** for live weather, pick your **City** from the
 dropdown in Settings → Engine. For a city that isn't listed, edit `location`

@@ -113,14 +113,17 @@ system accent (Blue, Purple, Graphite, …), so it won't be an exact RGB match.
   load next login.
 - **Windows:** check the value `EnvironmentThemeController` under
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
-- The launcher runs `main.py --background` from the project folder — if you move
-  the folder, re-toggle run-at-login so the path updates.
+- The launcher runs `main.py --background` from the project folder (or the
+  downloaded `Flow.app` / `Flow.exe` with `--background`) — if you move the
+  folder or the app, re-toggle run-at-login so the path updates.
 
 ---
 
 ## Reset everything
 
-Stop the app, then delete the state files. Defaults are used on next launch;
+Stop the app, then delete the state files from the data folder (the project
+folder from source; `~/Library/Application Support/Flow/` or `%APPDATA%\Flow\`
+for the downloaded app). Defaults are used on next launch;
 `config.json` is written again when a setting changes and `tasks.json` when a
 reminder changes.
 

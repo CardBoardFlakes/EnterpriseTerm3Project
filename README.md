@@ -11,9 +11,58 @@ doing work when something actually changes.
 
 ---
 
-## Quick start
+## Screenshots
+
+| Dashboard (day) | Dashboard (night) |
+|---|---|
+| ![Flow dashboard during the day: live Sydney weather, mood profiles, feature toggles and manual theme controls](docs/screenshots/dashboard.png) | ![The same dashboard after dark — the window follows the time of day into a dark theme](docs/screenshots/dashboard-night.png) |
+
+| Settings | Timers |
+|---|---|
+| ![Settings tab: wallpaper look, ambient sound, seasons and transitions, device appearance](docs/screenshots/settings.png) | ![Focus & Tasks window, Timers tab: Pomodoro / countdown / stopwatch](docs/screenshots/timers.png) |
+
+| To-Do & Schedules | Music |
+|---|---|
+| ![Scheduled reminders list and new-reminder form](docs/screenshots/tasks.png) | ![Local music player with the two built-in sample tracks](docs/screenshots/music.png) |
+
+---
+
+## Getting Flow
+
+There are three ways to run Flow. Most people should use the first.
+
+### 1. Download the app (no Python or command line needed)
+
+Grab the latest build from the
+**[Releases page](https://github.com/CardBoardFlakes/EnterpriseTerm3Project/releases/latest)**:
+
+| Your computer | Download | Install |
+|---|---|---|
+| Mac with Apple silicon (M1 or newer) | `Flow-macOS-arm64.dmg` | Open the DMG and drag **Flow** into **Applications**. |
+| Mac with an Intel processor | `Flow-macOS-x86_64.dmg` | Same as above. |
+| Windows 10 / 11 | `Flow-Windows-x64.exe` | Save it anywhere (e.g. your Desktop) and double-click it. Nothing to install. |
+
+Then start Flow like any other app — from Launchpad / the Applications folder
+on macOS, or by double-clicking `Flow-Windows-x64.exe` on Windows.
+
+> **First launch security prompts.** The builds aren't code-signed, so your OS
+> asks you to confirm the first time:
+> - **macOS:** if you see *"Flow can't be opened"* or *"Apple could not verify…"*,
+>   open **System Settings → Privacy & Security**, scroll down and click
+>   **Open Anyway** next to Flow (on older macOS: right-click Flow → **Open**).
+>   macOS may also ask to let Flow control *System Events* — allow it so Flow can
+>   change your accent colour, Dark/Light mode and wallpaper.
+> - **Windows:** if SmartScreen shows *"Windows protected your PC"*, click
+>   **More info → Run anyway**.
+
+The downloaded app keeps its settings in `~/Library/Application Support/Flow/`
+(macOS) or `%APPDATA%\Flow\` (Windows). **Run at login** (Settings → Engine)
+works the same way and launches the app in the background.
+
+### 2. Run from source
 
 ```bash
+git clone https://github.com/CardBoardFlakes/EnterpriseTerm3Project.git
 cd EnterpriseTerm3Project
 pip install -r requirements.txt      # optional deps: requests (weather), pygame (sound)
 python main.py                       # launch the GUI
@@ -28,6 +77,35 @@ automatically as you change it.
 > - Windows: included with the python.org installer
 
 See the full walkthrough in **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
+
+### 3. Build the app yourself
+
+Builds use [PyInstaller](https://pyinstaller.org/) and must be made on the OS
+you're targeting (a Mac builds the Mac app, Windows builds the `.exe`):
+
+```bash
+pip install -r requirements.txt -r packaging/requirements-build.txt
+python packaging/build.py
+```
+
+| OS | Output in `dist/` |
+|---|---|
+| macOS | `Flow.app` and `Flow-macOS-<arch>.dmg` |
+| Windows | `Flow.exe` (single file, no console window) and `Flow-Windows-<arch>.exe` |
+
+**Publishing a release:** push a version tag and GitHub Actions
+([`.github/workflows/release.yml`](.github/workflows/release.yml)) runs the tests,
+builds the Apple-silicon Mac, Intel Mac and Windows apps, and attaches them to a
+new GitHub Release:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+You can also run the workflow by hand from the **Actions** tab ("Build desktop
+apps" → *Run workflow*) to get the builds as downloadable artifacts without
+publishing a release.
 
 ---
 
@@ -81,6 +159,10 @@ python main.py --once       # run one engine cycle, then exit
 python main.py --background # headless loop (what "run at login" launches)
 python tests.py             # run the test suite
 ```
+
+The downloaded app accepts the same flags, e.g.
+`/Applications/Flow.app/Contents/MacOS/Flow --once` or
+`Flow-Windows-x64.exe --background`.
 
 GUI and background modes may be open together. They share one active engine,
 so opening the settings window does not duplicate or silence ambient playback;
@@ -139,9 +221,13 @@ town's coordinates rather than your exact address.
 | `activity.py` | Idle-time detection |
 | `autostart.py` | Run-at-login (LaunchAgent / Run key) |
 | `processlock.py` | Single-engine and cross-process audio ownership |
+| `paths.py` | Where data lives (project folder from source, per-user folder when packaged) |
+| `packaging/` | PyInstaller spec, icon generator and `build.py` for the desktop apps |
+| `.github/workflows/release.yml` | Builds + publishes the macOS / Windows apps on version tags |
 
-Settings are stored in `config.json`; tasks in `tasks.json`; generated
-wallpaper assets in `~/.environment_theme_controller/`.
+Settings are stored in `config.json`; tasks in `tasks.json` (in the project
+folder from source, or the per-user data folder for the downloaded app);
+generated wallpaper assets in `~/.environment_theme_controller/`.
 
 ---
 
@@ -160,12 +246,12 @@ pip install ruff
 python3 -m ruff check .      # 0 issues
 ```
 
-A 453-check headless test suite covering config,
+A 463-check headless test suite covering config,
 mood profiles, seasons, gradual transitions + easing, high-contrast,
 weather override, theme + time-of-day phases, wallpaper PNG / drift / patterns
 / warmth / reliable original restoration, sound selection / variants /
 continuous-loop recovery, starter music generation, tasks,
-autostart, all three timer modes, the GUI
+autostart, packaged-app data paths, all three timer modes, the GUI
 value mapping + display helpers (icons, temperature, UV band, live-data line),
 idle detection, other-audio detection, desktop notifications, and the engine's
 pure helpers + change-guards. All system-mutating calls

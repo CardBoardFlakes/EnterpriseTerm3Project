@@ -13,9 +13,11 @@ import hashlib
 import tempfile
 from contextlib import contextmanager
 
-# Absolute path next to this module, so tasks are read/written from the same
+import paths
+
+# Absolute path in the data folder (see paths.py), so tasks are read/written from the same
 # place regardless of the launch directory (see config.CONFIG_FILE).
-TASKS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks.json")
+TASKS_FILE = os.path.join(paths.DATA_DIR, "tasks.json")
 
 TASK_TYPES = ["daily", "once"]
 ACTIONS = ["notify", "chime"]

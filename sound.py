@@ -17,10 +17,11 @@ import time
 import wave
 
 import processlock
+import paths
 
 # Absolute so the app always finds your files regardless of the working
 # directory (Finder launch, run-at-login, `--once` from elsewhere, …).
-SOUNDS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sounds")
+SOUNDS_DIR = os.path.join(paths.DATA_DIR, "sounds")
 
 # Wind at/above this speed (km/h) plays the "cloud" (windy) ambience even on an
 # otherwise clear sky.

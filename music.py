@@ -15,8 +15,9 @@ import wave
 
 import sound  # reuse the shared pygame.mixer initialisation
 import processlock
+import paths
 
-MUSIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music")
+MUSIC_DIR = os.path.join(paths.DATA_DIR, "music")
 AUDIO_EXTS = (".mp3", ".ogg", ".wav", ".flac", ".m4a")
 SAMPLE_TRACKS = (
     "Flow Sample - Morning Focus.wav",

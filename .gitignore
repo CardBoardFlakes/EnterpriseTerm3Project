@@ -10,3 +10,7 @@ sounds/
 
 # User music and generated sample tracks
 music/
+
+# Packaged app builds (python packaging/build.py)
+dist/
+packaging/build/
