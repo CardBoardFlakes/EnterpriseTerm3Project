@@ -6,8 +6,11 @@ wallpaper, plays quiet ambient sound, and comes with a Pomodoro timer and task
 reminders. There's also a countdown timer, a stopwatch and a local music player.
 
 It doesn't need much to run. Weather and audio are optional, and the wallpaper
-images are drawn with the Python standard library (no Pillow). It stays cheap
-because it only does work when something actually changes.
+images are drawn with the Python standard library.
+
+Flow's main features (timed breaks, ambient sound, music, colour and light, and
+reminders) are based on published research into focus and productivity. See
+[The research behind Flow](#the-research-behind-flow) for the studies.
 
 ---
 
